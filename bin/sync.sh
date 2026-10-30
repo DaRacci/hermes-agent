@@ -5,6 +5,8 @@
 #   * main is REBUILT as upstream/main + a fixed delta, never rebased. Rebuilding
 #     a delta onto a fresh tree cannot conflict, while rebasing a deletion
 #     commit conflicts every time upstream touches a workflow file.
+#   * a rebuild runs when upstream moved OR the delta no longer matches main, so
+#     editing the delta is enough to publish it — it never waits for upstream.
 #   * every force-push is lease-checked against a sha read moments earlier.
 #   * divergence (main not shaped like our own rebuild) halts the run.
 #   * patch branches here are automation-owned. They are NOT the PR heads.
