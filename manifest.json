@@ -30,6 +30,17 @@
       "tests": ["tests/tools/test_env_probe.py"],
       "files_glob": ["tools/env_probe.py"],
       "status": "active"
+    },
+    {
+      "slug": "nix-version-from-release-date",
+      "branch": "patch/nix-version-from-release-date",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 40,
+      "tests": [],
+      "nix_paths": ["nix/hermes-agent.nix"],
+      "files_glob": ["nix/hermes-agent.nix"],
+      "status": "active"
     }
   ]
 }
