@@ -4,17 +4,17 @@ name: Fork maintenance
 # maintenance delta on every rebuild.
 #
 # Daily (and on demand):
-#   1. fast-forward nothing — REBUILD main as upstream/main + delta
+#   1. REBUILD main as upstream/main + delta (never rebase the delta)
 #   2. rebase every patch/* branch onto the rebuilt main
 #   3. rebuild integration = main + all clean patches
-#   4. run the CI gate on integration (separate job, see ci/)
+#   4. run the CI gate on that integration commit — and only there
 #
 # Scheduled workflows are disabled by default when a public repo is forked;
 # this one is enabled in the Actions tab. Re-enable with `gh workflow enable`.
 #
-# NOTE: a push made with GITHUB_TOKEN does not trigger workflows. That is
-# deliberate here — the sync must never cascade into a run of itself, and CI
-# runs inside this workflow on the sha it just built.
+# NOTE: a push made with GITHUB_TOKEN does not trigger other workflows. That is
+# deliberate: the sync can never cascade into a run of itself, and CI runs in
+# this same run against the sha it just built.
 
 on:
   workflow_dispatch:
@@ -68,3 +68,43 @@ jobs:
           out=$(bash /tmp/maintenance/bin/sync.sh | tee /dev/stderr)
           echo "integration_sha=$(printf '%s\n' "$out" | sed -n 's/^INTEGRATION_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$(printf '%s\n' "$out" | sed -n 's/^UPSTREAM_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: CI gate on integration
+    needs: maintain
+    if: needs.maintain.outputs.integration_sha != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout integration
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.maintain.outputs.integration_sha }}
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen --extra all --group dev --group test
+
+      - name: Load patch manifest
+        run: |
+          set -euo pipefail
+          git fetch --filter=blob:none origin '+refs/heads/maintenance:refs/remotes/origin/maintenance'
+          git worktree add --detach /tmp/maintenance origin/maintenance
+
+      - name: Tier 0 — blocking lint, types and code-health ratchet
+        run: .venv/bin/python scripts/check
+
+      - name: Tier 1 — tests for the patched areas
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(jq -r '.patches[] | select(.status=="active") | .tests[]' /tmp/maintenance/manifest.json)
+          printf 'targeted tests: %s\n' "${files[*]}"
+          HERMES_PYTHON="$PWD/.venv/bin/python" bash scripts/run_tests.sh "${files[@]}"
