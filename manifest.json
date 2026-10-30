@@ -1,0 +1,35 @@
+{
+  "_comment": "Maintained-fork patch registry. Order is the merge order into integration. status: active | parked | obsolete",
+  "patches": [
+    {
+      "slug": "managed-profile-config-save",
+      "branch": "patch/managed-profile-config-save",
+      "upstream_pr": 93896,
+      "legacy_branch": "fix/managed-profile-config-save",
+      "order": 10,
+      "tests": ["tests/hermes_cli/test_managed_install_shapes.py"],
+      "files_glob": ["hermes_constants.py"],
+      "status": "active"
+    },
+    {
+      "slug": "searxng-configurable",
+      "branch": "patch/searxng-configurable",
+      "upstream_pr": 61446,
+      "legacy_branch": "feat/searxng-configurable",
+      "order": 20,
+      "tests": ["tests/tools/test_web_providers_searxng.py"],
+      "files_glob": ["plugins/web/searxng/**", "tools/web_tools.py"],
+      "status": "active"
+    },
+    {
+      "slug": "hermes-python-toolchain",
+      "branch": "patch/hermes-python-toolchain",
+      "upstream_pr": 52812,
+      "legacy_branch": "fix/hermes-python-toolchain-detection",
+      "order": 30,
+      "tests": ["tests/tools/test_env_probe.py"],
+      "files_glob": ["tools/env_probe.py"],
+      "status": "active"
+    }
+  ]
+}
