@@ -897,17 +897,27 @@ services.hermes-agent = {
 
 ### Using the Overlay
 
-External flakes can override the package directly:
+External flakes can take the package through one of two overlays:
+
+- `hermes-agent.overlays.default` rebuilds the package against your own `pkgs`,
+  shipping the same optional groups as `packages.<system>.default` — every
+  platform-portable group, plus `matrix` on Linux.
+- `hermes-agent.overlays.locked` exposes the exact derivation this flake ships
+  and tests: the same output path as `packages.<system>.default`.
 
 ```nix
 {
   inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
   outputs = { hermes-agent, nixpkgs, ... }: {
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
-    # Then:
-    #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+    # Or pin to the tested derivation:
+    #   nixpkgs.overlays = [ hermes-agent.overlays.locked ];
+    # Either overlay returns the full variant. The `extra*` options add to the
+    # groups it already ships:
+    #   pkgs.hermes-agent.override { extraPythonPackages = [ pkgs.python3Packages.requests ]; }
     #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
-    # Both add to the groups the default package ships. To drop those:
+    # `defaultDependencyGroups` replaces that list instead of adding to it, so
+    # `[ ]` drops every optional group:
     #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
   };
 }
