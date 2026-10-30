@@ -26,28 +26,12 @@
 
       # All platform-portable optional integrations pre-built. These are the
       # variant's own groups, not the user's extras, so an
-      # `.override { extraDependencyGroups = ...; }` adds to them.
+      # `.override { extraDependencyGroups = ...; }` adds to them. The list
+      # lives in `nix/exports.nix`; `overlays.default` resolves the same one
+      # against the consumer's pkgs, so neither variant can ship fewer groups
+      # than the other.
       full = minimal.override {
-        defaultDependencyGroups = [
-          "anthropic"
-          "azure-identity"
-          "bedrock"
-          "daytona"
-          "dingtalk"
-          "edge-tts"
-          "exa"
-          "fal"
-          "feishu"
-          "firecrawl"
-          "messaging"
-          "modal"
-          "parallel-web"
-          "tts-premium"
-          "vercel"
-          "voice"
-        ]
-        # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
-        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ "matrix" ];
+        defaultDependencyGroups = inputs.self.lib.defaultDependencyGroups pkgs;
       };
     in
     {
