@@ -7,8 +7,12 @@
       "upstream_pr": 93896,
       "legacy_branch": "fix/managed-profile-config-save",
       "order": 10,
-      "tests": ["tests/hermes_cli/test_managed_install_shapes.py"],
-      "files_glob": ["hermes_constants.py"],
+      "tests": [
+        "tests/hermes_cli/test_managed_install_shapes.py"
+      ],
+      "files_glob": [
+        "hermes_constants.py"
+      ],
       "status": "active"
     },
     {
@@ -17,8 +21,13 @@
       "upstream_pr": 61446,
       "legacy_branch": "feat/searxng-configurable",
       "order": 20,
-      "tests": ["tests/tools/test_web_providers_searxng.py"],
-      "files_glob": ["plugins/web/searxng/**", "tools/web_tools.py"],
+      "tests": [
+        "tests/tools/test_web_providers_searxng.py"
+      ],
+      "files_glob": [
+        "plugins/web/searxng/**",
+        "tools/web_tools.py"
+      ],
       "status": "active"
     },
     {
@@ -27,8 +36,12 @@
       "upstream_pr": 52812,
       "legacy_branch": "fix/hermes-python-toolchain-detection",
       "order": 30,
-      "tests": ["tests/tools/test_env_probe.py"],
-      "files_glob": ["tools/env_probe.py"],
+      "tests": [
+        "tests/tools/test_env_probe.py"
+      ],
+      "files_glob": [
+        "tools/env_probe.py"
+      ],
       "status": "active"
     },
     {
@@ -38,8 +51,12 @@
       "legacy_branch": null,
       "order": 40,
       "tests": [],
-      "nix_paths": ["nix/hermes-agent.nix"],
-      "files_glob": ["nix/hermes-agent.nix"],
+      "nix_paths": [
+        "nix/hermes-agent.nix"
+      ],
+      "files_glob": [
+        "nix/hermes-agent.nix"
+      ],
       "status": "active"
     },
     {
@@ -70,8 +87,16 @@
       "legacy_branch": null,
       "order": 60,
       "tests": [],
-      "nix_paths": ["nix/overlays.nix"],
-      "files_glob": ["nix/overlays.nix", "website/docs/getting-started/nix-setup.md"],
+      "nix_paths": [
+        "nix/overlays.nix",
+        "nix/checks.nix"
+      ],
+      "files_glob": [
+        "nix/overlays.nix",
+        "website/docs/getting-started/nix-setup.md",
+        "nix/checks.nix",
+        "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/nix-setup.md"
+      ],
       "status": "active"
     }
   ]
