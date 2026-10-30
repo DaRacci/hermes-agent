@@ -1037,7 +1037,55 @@ nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户�
 | `restart` | `str` | `"always"` | systemd `Restart=` 策略 |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` 值 |
 
-### 容器
+### Backend（`hermes serve` / `hermes dashboard`）
+
+该选项运行远程 Hermes Desktop 连接和 Web 仪表盘所连接的那个进程，并让它与 gateway 一起运行。它不能与 `container.enable` 同时使用。
+
+| 选项 | 类型 | 默认值 | 描述 |
+|---|---|---|---|
+| `backend.mode` | `enum ["none" "serve" "dashboard"]` | `"none"` | `serve` 在没有用户界面的情况下运行，提供 `/api/ws` 和 `/api/pty`。`dashboard` 还会提供浏览器面板。 |
+| `backend.host` | `str` | `"127.0.0.1"` | 绑定的地址。除回环地址以外的每个地址都会启动身份验证门。 |
+| `backend.port` | `port` | `9119` | 绑定的端口 |
+| `backend.extraArgs` | `listOf str` | `[]` | 后端命令的额外参数 |
+
+### 仅 Home Manager
+
+| 选项 | 类型 | 默认值 | 描述 |
+|---|---|---|---|
+| `hermesHome` | `str` | `"${config.home.homeDirectory}/.hermes"` | 直接指定 `HERMES_HOME`。NixOS 模块从 `stateDir` 构建它。 |
+| `gateway.enable` | `bool` | `false` | 运行消息 gateway。在 NixOS 模块上，gateway 就是服务本身，因此该模块没有此选项。 |
+
+### `programs.hermes-agent`（仅 Home Manager）
+
+Home Manager 把“为我安装这个应用”与“运行这个守护进程”分开。`services.hermes-agent` 负责状态、配置和守护进程。`programs.hermes-agent` 安装你要使用的东西，并从 services 读取 `hermesHome` 和后端地址。
+
+| 选项 | 类型 | 默认值 | 描述 |
+|---|---|---|---|
+| `enable` | `bool` | `false` | 将 `hermes` CLI 添加到 `home.packages`，并为你的 shell 导出 `HERMES_HOME` |
+| `package` | `package` | `services.hermes-agent.package` | 要安装的包。默认值会应用 services 中的 `extraPythonPackages` 和 `extraDependencyGroups`，因此两者是同一次构建。 |
+| `desktop.enable` | `bool` | `false` | 添加 Hermes Desktop 应用，在 Linux 上附带启动器条目 |
+| `desktop.package` | `package` | `package.hermesDesktop` | 桌面应用包。默认跟随 `package`，因此应用与 services 运行同一个 Hermes 运行时。 |
+
+```nix
+programs.hermes-agent = {
+  enable = true;
+  desktop.enable = true;
+};
+
+services.hermes-agent = {
+  enable = true;
+  backend.mode = "serve";
+  backend.sessionTokenFile = config.sops.secrets."hermes/desktop-token".path;
+};
+```
+
+启动器自身携带 `HERMES_HOME`。桌面菜单不读取任何 shell profile，因此 `programs.hermes-agent.enable` 通过 `home.sessionVariables` 导出的值只能到达交互式 shell。如果该值不在启动器中，应用会打开 `~/.hermes`，而 services 使用 `hermesHome`，于是你看不到任何会话和密钥。
+
+使用 `backend.sessionTokenFile` 时，应用会连接到服务的后端，而不是自己启动一个。双方都在启动时读取该文件，因此 token 不会进入任何 Nix store 路径。不设置该选项时，双方各自运行自己的后端。
+
+拆分之后，`services.hermes-agent.installPackage` 已被移除。仍然设置它的配置会收到一个指出替代方案的错误。
+
+### 容器（仅 NixOS）
 
 | 选项 | 类型 | 默认值 | 描述 |
 |---|---|---|---|
@@ -1073,6 +1121,22 @@ nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户�
 └── workspace/                       # MESSAGING_CWD
     ├── SOUL.md                      # 来自 documents 选项
     └── （Agent 创建的文件）
+```
+
+### Home Manager
+
+```
+~/.hermes/                           # hermesHome（HERMES_HOME），权限 0700
+├── SOUL.md                          # 来自 hermesHomeFiles
+├── config.yaml                      # 由 Nix 写入，每次激活时合并
+├── .managed                         # 标记：指明管理它的系统
+├── .env                             # 从 environment + environmentFiles 重新写入
+├── auth.json                        # OAuth 凭据：预置后由 Hermes 拥有
+├── memories/  sessions/  skills/  cron/  logs/  plugins/
+└── （运行时状态）
+
+~/                                   # workingDirectory，默认为你的 home 目录
+└── AGENTS.md                        # 来自 documents 选项
 ```
 
 ### 容器模式
