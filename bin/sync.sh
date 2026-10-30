@@ -37,7 +37,8 @@ if ! git remote get-url "$UPSTREAM" >/dev/null 2>&1; then
 fi
 
 mkdir -p "$WT_ROOT"
-declare -A RESULT=()   # slug -> clean|conflict|skipped|missing
+declare -A RESULT=()   # slug -> clean|conflict|skipped|missing|obsolete
+declare -A CFILES=()   # slug -> comma-separated conflicted files
 declare -a CONFLICT_FILES=()
 
 log "fetch"
@@ -144,6 +145,7 @@ while IFS=$'\t' read -r order slug branch; do
     ( cd "$wt" && git cherry-pick --abort >/dev/null 2>&1 || true )
     note "$slug: CONFLICT (${files:-unknown})"
     RESULT[$slug]="conflict"
+    CFILES[$slug]="$files"
     CONFLICT_FILES+=("$slug:$files")
   fi
   git worktree remove --force "$wt" 2>/dev/null || true
@@ -202,3 +204,16 @@ echo "PATCHES_FAILED=$failed"
 echo "INTEGRATION_CHANGED=$INTEG_CHANGED"
 echo "INTEGRATION_SHA=$INTEG"
 echo "UPSTREAM_SHA=$UP"
+
+# ── issue bookkeeping ───────────────────────────────────────────────────────
+# One issue per conflicting patch, plus a dashboard. Skipped in dry-run so a
+# rehearsal never touches the tracker.
+if [ "$DRY_RUN" != "1" ] && [ "${ISSUES:-1}" = "1" ] && command -v gh >/dev/null 2>&1; then
+  results="$WT_ROOT/sync-results.tsv"
+  : > "$results"
+  for slug in "${!RESULT[@]}"; do
+    printf '%s\t%s\t%s\n' "$slug" "${RESULT[$slug]}" "${CFILES[$slug]:-}" >> "$results"
+  done
+  bash "$MAINT_DIR/bin/issues.sh" "$results" "$UP" "$INTEG" \
+    || note "issues: bookkeeping failed (run continues; tracker may be stale)"
+fi
