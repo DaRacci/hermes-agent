@@ -692,21 +692,30 @@ services.hermes-agent = {
 
 ### 使用 Overlay
 
-外部 flake 可以直接覆盖包：
+外部 flake 可以通过以下两个 overlay 之一引入该包：
+
+- `hermes-agent.overlays.default` 基于你自己的 `pkgs` 重新构建该包，附带与 `packages.<system>.default` 相同的可选组——所有平台通用的组，以及在 Linux 上额外附带的 `matrix`。
+- `hermes-agent.overlays.locked` 暴露本 flake 实际发布并测试的那份 derivation：与 `packages.<system>.default` 相同的输出路径。
 
 ```nix
 {
   inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
   outputs = { hermes-agent, nixpkgs, ... }: {
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
-    # 然后：
-    #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+    # 或固定到经过测试的 derivation：
+    #   nixpkgs.overlays = [ hermes-agent.overlays.locked ];
+    # 两个 overlay 返回的都是完整变体。`extra*` 选项在它已附带的组之上追加：
+    #   pkgs.hermes-agent.override { extraPythonPackages = [ pkgs.python3Packages.requests ]; }
     #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
-    # 两者都是在 default 包附带的组之上追加。要去掉附带的组：
+    # `defaultDependencyGroups` 替换该列表而不是追加，因此 `[ ]` 会去掉所有可选组：
     #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
   };
 }
 ```
+
+两者的区别在于各自跟随什么。`default` 基于你的 `pkgs` 重新实例化该包，因此覆盖某个共享依赖——`git.overrideAttrs`、换一个 `openssl`、或整份打过补丁的包集——都会改变 `pkgs.hermes-agent`。`locked` 是 flake 自身的实例化，会忽略这些覆盖，所以当你想要与本 flake 的 CI 构建结果完全一致时，应当选它。当你的 `nixpkgs` 就是本 flake 的 `nixpkgs` 时，两者解析到同一份 derivation。
+
+`defaultDependencyGroups` *替换*已附带的列表，而不是在其之上追加。因此 `pkgs.hermes-agent.override { defaultDependencyGroups = [ "messaging" "voice" ]; }` 只会用这两个组构建，而 `[ ]` 得到的是裸构建——与 `packages.<system>.minimal` 相同的 derivation。
 
 ### 插件配置
 
