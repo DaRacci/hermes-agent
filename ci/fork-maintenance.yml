@@ -43,6 +43,7 @@ jobs:
       integration_sha: ${{ steps.sync.outputs.integration_sha }}
       upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
       patches_failed: ${{ steps.sync.outputs.patches_failed }}
+      integration_changed: ${{ steps.sync.outputs.integration_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,11 +71,12 @@ jobs:
           echo "integration_sha=$(printf '%s\n' "$out" | sed -n 's/^INTEGRATION_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$(printf '%s\n' "$out" | sed -n 's/^UPSTREAM_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
           echo "patches_failed=$(printf '%s\n' "$out" | sed -n 's/^PATCHES_FAILED=//p' | tail -1)" >> "$GITHUB_OUTPUT"
+          echo "integration_changed=$(printf '%s\n' "$out" | sed -n 's/^INTEGRATION_CHANGED=//p' | tail -1)" >> "$GITHUB_OUTPUT"
 
   ci:
     name: CI gate on integration
     needs: maintain
-    if: always() && needs.maintain.outputs.integration_sha != ''
+    if: always() && needs.maintain.outputs.integration_sha != '' && needs.maintain.outputs.integration_changed == '1'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

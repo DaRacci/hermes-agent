@@ -59,30 +59,30 @@ if [ -n "$LAST" ]; then
   fi
 fi
 
-# ── no-op ───────────────────────────────────────────────────────────────────
+# ── rebuild main (or reuse the current one) ─────────────────────────────────
+# Never exit early here: patches may still be stale relative to main even when
+# upstream has not moved, and the workflow needs INTEGRATION_SHA on every run.
 if [ "$LAST" = "$UP" ]; then
-  log "upstream unchanged since last rebuild — nothing to do"
-  echo "no-op: main already built on $UP" >> "$SUMMARY"
-  exit 0
-fi
-
-# ── rebuild main ────────────────────────────────────────────────────────────
-log "rebuild main on $UP"
-git checkout -q --detach "$UP"
-git rm -r -q .github/workflows 2>/dev/null || true
-mkdir -p .github/workflows
-cp "$DELTA_WORKFLOW" .github/workflows/fork-maintenance.yml
-git add -A
-run git commit -q -m "chore(ci): rebuild maintenance delta on upstream $UP
+  log "upstream unchanged — reusing main $MAIN"
+  NEWMAIN="$MAIN"
+else
+  log "rebuild main on $UP"
+  git checkout -q --detach "$UP"
+  git rm -r -q .github/workflows 2>/dev/null || true
+  mkdir -p .github/workflows
+  cp "$DELTA_WORKFLOW" .github/workflows/fork-maintenance.yml
+  git add -A
+  run git commit -q -m "chore(ci): rebuild maintenance delta on upstream $UP
 
 Delta applied to a fresh upstream tree rather than rebased onto it, so
 upstream edits to workflow files can never conflict with this commit.
 
 Upstream: $UP"
-NEWMAIN=$(git rev-parse HEAD)
-git branch -f main "$NEWMAIN"
-run git push --force-with-lease="refs/heads/main:$MAIN" "$ORIGIN" main:main
-echo "- main: $MAIN -> $NEWMAIN (upstream $UP)" >> "$SUMMARY"
+  NEWMAIN=$(git rev-parse HEAD)
+  git branch -f main "$NEWMAIN"
+  run git push --force-with-lease="refs/heads/main:$MAIN" "$ORIGIN" main:main
+  echo "- main: $MAIN -> $NEWMAIN (upstream $UP)" >> "$SUMMARY"
+fi
 
 # ── rebase every patch onto the rebuilt main ────────────────────────────────
 log "rebase patches"
@@ -167,9 +167,11 @@ for branch in "${CLEAN_BRANCHES[@]:-}"; do
 done
 INTEG=$( cd "$WT_ROOT/integration" && git rev-parse HEAD )
 OLD_INTEG=$(git rev-parse -q --verify refs/remotes/origin/integration || true)
+INTEG_CHANGED=0
 if [ "$INTEG" = "$OLD_INTEG" ]; then
   note "integration unchanged ($INTEG)"
 else
+  INTEG_CHANGED=1
   run git push --force-with-lease="refs/heads/integration:${OLD_INTEG:-}" "$ORIGIN" "$INTEG:refs/heads/integration"
   note "integration: ${OLD_INTEG:-<new>} -> $INTEG ($applied patch(es))"
 fi
@@ -197,5 +199,6 @@ if [ "$failed" -gt 0 ]; then
 fi
 
 echo "PATCHES_FAILED=$failed"
+echo "INTEGRATION_CHANGED=$INTEG_CHANGED"
 echo "INTEGRATION_SHA=$INTEG"
 echo "UPSTREAM_SHA=$UP"
