@@ -925,7 +925,7 @@ External flakes can take the package through one of two overlays:
 
 The difference is what each overlay follows. `default` re-instantiates the package against your `pkgs`, so an override of a shared dependency — `git.overrideAttrs`, a different `openssl`, a whole patched package set — changes `pkgs.hermes-agent`. `locked` is the flake's own instantiation and ignores those overrides, which is why it is the right choice when you want exactly what this flake's CI built. When your `nixpkgs` *is* the flake's `nixpkgs`, the two resolve to the same derivation.
 
-`defaultDependencyGroups = [ ]` through the `default` overlay produces the bare build — the same derivation as `packages.<system>.minimal` — for a consumer that wants to add only the groups it names.
+`defaultDependencyGroups` *replaces* the shipped list rather than adding to it, so `pkgs.hermes-agent.override { defaultDependencyGroups = [ "messaging" "voice" ]; }` builds with exactly those two groups, and `[ ]` produces the bare build — the same derivation as `packages.<system>.minimal`.
 
 ### Consuming the Flake as a Library (`mkHermesAgent`)
 
