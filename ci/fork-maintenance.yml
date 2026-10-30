@@ -1,0 +1,70 @@
+name: Fork maintenance
+
+# The only workflow this fork runs. Upstream's 57 are deleted in the
+# maintenance delta on every rebuild.
+#
+# Daily (and on demand):
+#   1. fast-forward nothing — REBUILD main as upstream/main + delta
+#   2. rebase every patch/* branch onto the rebuilt main
+#   3. rebuild integration = main + all clean patches
+#   4. run the CI gate on integration (separate job, see ci/)
+#
+# Scheduled workflows are disabled by default when a public repo is forked;
+# this one is enabled in the Actions tab. Re-enable with `gh workflow enable`.
+#
+# NOTE: a push made with GITHUB_TOKEN does not trigger workflows. That is
+# deliberate here — the sync must never cascade into a run of itself, and CI
+# runs inside this workflow on the sha it just built.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print planned git operations without pushing"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: fork-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    name: Sync upstream, rebase patches, build integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      integration_sha: ${{ steps.sync.outputs.integration_sha }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: true
+
+      - name: Load maintenance branch
+        run: |
+          set -euo pipefail
+          git fetch --filter=blob:none origin '+refs/heads/maintenance:refs/remotes/origin/maintenance'
+          rm -rf /tmp/maintenance
+          git worktree add --detach /tmp/maintenance origin/maintenance
+
+      - name: Sync
+        id: sync
+        env:
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          GH_TOKEN: ${{ github.token }}
+          MAINT_DIR: /tmp/maintenance
+        run: |
+          set -euo pipefail
+          out=$(bash /tmp/maintenance/bin/sync.sh | tee /dev/stderr)
+          echo "integration_sha=$(printf '%s\n' "$out" | sed -n 's/^INTEGRATION_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(printf '%s\n' "$out" | sed -n 's/^UPSTREAM_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
