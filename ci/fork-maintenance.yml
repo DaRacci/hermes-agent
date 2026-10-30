@@ -42,6 +42,7 @@ jobs:
     outputs:
       integration_sha: ${{ steps.sync.outputs.integration_sha }}
       upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      patches_failed: ${{ steps.sync.outputs.patches_failed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,11 +69,12 @@ jobs:
           out=$(bash /tmp/maintenance/bin/sync.sh | tee /dev/stderr)
           echo "integration_sha=$(printf '%s\n' "$out" | sed -n 's/^INTEGRATION_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$(printf '%s\n' "$out" | sed -n 's/^UPSTREAM_SHA=//p' | tail -1)" >> "$GITHUB_OUTPUT"
+          echo "patches_failed=$(printf '%s\n' "$out" | sed -n 's/^PATCHES_FAILED=//p' | tail -1)" >> "$GITHUB_OUTPUT"
 
   ci:
     name: CI gate on integration
     needs: maintain
-    if: needs.maintain.outputs.integration_sha != ''
+    if: always() && needs.maintain.outputs.integration_sha != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -108,3 +110,19 @@ jobs:
           mapfile -t files < <(jq -r '.patches[] | select(.status=="active") | .tests[]' /tmp/maintenance/manifest.json)
           printf 'targeted tests: %s\n' "${files[*]}"
           HERMES_PYTHON="$PWD/.venv/bin/python" bash scripts/run_tests.sh "${files[@]}"
+
+  verdict:
+    name: Integration verdict
+    needs: [maintain, ci]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fail when the integration is incomplete
+        run: |
+          set -euo pipefail
+          failed="${{ needs.maintain.outputs.patches_failed }}"
+          echo "patches not applied: ${failed:-unknown}"
+          if [ "${failed:-1}" != "0" ]; then
+            echo "::error::integration is missing $failed patch(es); see the conflict issues"
+            exit 1
+          fi

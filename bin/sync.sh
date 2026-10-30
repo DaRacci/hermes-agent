@@ -98,20 +98,37 @@ while IFS=$'\t' read -r order slug branch; do
   OLD=$(git rev-parse "$ref")
   wt="$WT_ROOT/$slug"
   git worktree remove --force "$wt" 2>/dev/null || true
-  git worktree add -q --detach "$wt" "$OLD"
+  git worktree add -q --detach "$wt" "$UP"
 
-  base=$(git merge-base "$NEWMAIN" "$OLD")
-  if ( cd "$wt" && git checkout -q -B "rebase-$slug" "$OLD" \
-        && git rebase --onto "$NEWMAIN" "$base" "rebase-$slug" >/dev/null 2>&1 ); then
+  # Replay only this branch's OWN commits onto the upstream tip. A commit that
+  # carries the `Upstream:` trailer is a maintenance-delta rebuild; replaying
+  # one onto a main that already contains the delta conflicts with itself, so
+  # those are filtered out here — and never land on a patch branch again.
+  own=()
+  while read -r c; do
+    [ -z "$c" ] && continue
+    trailer=$(git log -1 --format='%(trailers:key=Upstream,valueonly)' "$c" | tr -d '\n')
+    [ -n "$trailer" ] && continue
+    own+=("$c")
+  done < <(git rev-list --reverse --no-merges "$OLD" --not "$UP")
+
+  if [ "${#own[@]}" -eq 0 ]; then
+    note "$slug: no patch commits ahead of upstream — obsolete"
+    RESULT[$slug]="obsolete"
+    git worktree remove --force "$wt" 2>/dev/null || true
+    continue
+  fi
+
+  if ( cd "$wt" && git checkout -q -B "replay-$slug" && git cherry-pick "${own[@]}" >/dev/null 2>&1 ); then
     NEW=$( cd "$wt" && git rev-parse HEAD )
-    note "$slug: clean ($OLD -> $NEW, $(git rev-list --count "$base..$OLD") commit(s))"
+    note "$slug: clean ($OLD -> $NEW, ${#own[@]} commit(s))"
     run git push --force-with-lease="refs/heads/$branch:$OLD" "$ORIGIN" "$NEW:refs/heads/$branch"
     git update-ref "$ref" "$NEW"
     RESULT[$slug]="clean"
     CLEAN_BRANCHES+=("$branch")
   else
     files=$( cd "$wt" && git diff --name-only --diff-filter=U | paste -sd, - || true )
-    ( cd "$wt" && git rebase --abort >/dev/null 2>&1 || true )
+    ( cd "$wt" && git cherry-pick --abort >/dev/null 2>&1 || true )
     note "$slug: CONFLICT (${files:-unknown})"
     RESULT[$slug]="conflict"
     CONFLICT_FILES+=("$slug:$files")
@@ -158,5 +175,14 @@ for entry in "${CONFLICT_FILES[@]:-}"; do
   [ -n "$entry" ] && printf 'CONFLICT %s\n' "$entry"
 done
 
+failed=0
+for slug in "${!RESULT[@]}"; do
+  case "${RESULT[$slug]}" in clean|obsolete) ;; *) failed=$((failed+1)) ;; esac
+done
+if [ "$failed" -gt 0 ]; then
+  printf '!! %s patch(es) not applied — integration is INCOMPLETE\n' "$failed"
+fi
+
+echo "PATCHES_FAILED=$failed"
 echo "INTEGRATION_SHA=$INTEG"
 echo "UPSTREAM_SHA=$UP"
