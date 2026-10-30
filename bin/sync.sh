@@ -6,7 +6,7 @@
 #     a delta onto a fresh tree cannot conflict, while rebasing a deletion
 #     commit conflicts every time upstream touches a workflow file.
 #   * a rebuild runs when upstream moved OR the delta no longer matches main, so
-#     editing the delta is enough to publish it — it never waits for upstream.
+#     an edited delta never sits unshipped behind an unchanged upstream.
 #   * every force-push is lease-checked against a sha read moments earlier.
 #   * divergence (main not shaped like our own rebuild) halts the run.
 #   * patch branches here are automation-owned. They are NOT the PR heads.
@@ -68,6 +68,11 @@ fi
 # Reusing main while the delta has moved would leave an edit to it inert on
 # maintenance until upstream happens to advance, so compare the content
 # directly. A delta file main does not have at all also counts as stale.
+#
+# Publishing a changed delta means the force-push modifies a workflow file,
+# which GitHub refuses for the default GITHUB_TOKEN (it has no `workflows`
+# permission). That case now fails the run at the push instead of silently
+# reusing a stale main; a token allowed to update workflow files publishes it.
 DELTA_STALE=0
 if ! git show "$MAIN:.github/workflows/fork-maintenance.yml" 2>/dev/null | cmp -s - "$DELTA_WORKFLOW"; then
   DELTA_STALE=1

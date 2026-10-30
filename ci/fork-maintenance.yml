@@ -4,9 +4,7 @@ name: Fork maintenance
 # maintenance delta on every rebuild.
 #
 # Daily (and on demand):
-#   1. REBUILD main as upstream/main + delta (never rebase the delta) whenever
-#      upstream moved or this delta changed — main only ever carries the delta
-#      the last rebuild copied onto it
+#   1. REBUILD main as upstream/main + delta (never rebase the delta)
 #   2. rebase every patch/* branch onto the rebuilt main
 #   3. rebuild integration = main + all clean patches
 #   4. run the CI gate on that integration commit — and only there
