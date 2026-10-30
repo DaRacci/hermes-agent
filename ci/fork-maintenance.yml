@@ -99,7 +99,8 @@ jobs:
   ci:
     name: CI gate on integration
     needs: maintain
-    if: always() && needs.maintain.outputs.integration_sha != '' && needs.maintain.outputs.integration_changed == '1'
+    # a dry run never pushes its integration sha, so there is nothing to check out
+    if: always() && inputs.dry_run != true && needs.maintain.outputs.integration_sha != '' && needs.maintain.outputs.integration_changed == '1'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
