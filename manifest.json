@@ -41,6 +41,27 @@
       "nix_paths": ["nix/hermes-agent.nix"],
       "files_glob": ["nix/hermes-agent.nix"],
       "status": "active"
+    },
+    {
+      "slug": "nix-package-builder",
+      "branch": "patch/nix-package-builder",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 50,
+      "tests": [],
+      "nix_paths": [
+        "nix/mkHermesAgent.nix",
+        "nix/exports.nix",
+        "nix/packages.nix",
+        "flake.nix"
+      ],
+      "files_glob": [
+        "nix/mkHermesAgent.nix",
+        "nix/exports.nix",
+        "nix/packages.nix",
+        "flake.nix"
+      ],
+      "status": "active"
     }
   ]
 }
