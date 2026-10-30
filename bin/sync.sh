@@ -98,7 +98,12 @@ while IFS=$'\t' read -r order slug branch; do
   OLD=$(git rev-parse "$ref")
   wt="$WT_ROOT/$slug"
   git worktree remove --force "$wt" 2>/dev/null || true
-  git worktree add -q --detach "$wt" "$UP"
+  # Replay onto the REBUILT main, not onto the bare upstream tip. GitHub
+  # refuses a ref update made with a GitHub App token that would reintroduce
+  # workflow files, so a patch branch must keep main's delta in its tree —
+  # otherwise moving the ref from "delta applied" back to "upstream tree"
+  # looks like creating 56 workflow files.
+  git worktree add -q --detach "$wt" "$NEWMAIN"
 
   # Replay only this branch's OWN commits onto the upstream tip. A commit that
   # carries the `Upstream:` trailer is a maintenance-delta rebuild; replaying
