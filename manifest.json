@@ -62,6 +62,17 @@
         "flake.nix"
       ],
       "status": "active"
+    },
+    {
+      "slug": "nix-rebuildable-overlay",
+      "branch": "patch/nix-rebuildable-overlay",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 60,
+      "tests": [],
+      "nix_paths": ["nix/overlays.nix"],
+      "files_glob": ["nix/overlays.nix"],
+      "status": "active"
     }
   ]
 }
