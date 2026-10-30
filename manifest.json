@@ -71,7 +71,7 @@
       "order": 60,
       "tests": [],
       "nix_paths": ["nix/overlays.nix"],
-      "files_glob": ["nix/overlays.nix"],
+      "files_glob": ["nix/overlays.nix", "website/docs/getting-started/nix-setup.md"],
       "status": "active"
     }
   ]
