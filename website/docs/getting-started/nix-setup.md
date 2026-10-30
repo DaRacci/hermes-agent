@@ -923,6 +923,41 @@ External flakes can take the package through one of two overlays:
 }
 ```
 
+The difference is what each overlay follows. `default` re-instantiates the package against your `pkgs`, so an override of a shared dependency — `git.overrideAttrs`, a different `openssl`, a whole patched package set — changes `pkgs.hermes-agent`. `locked` is the flake's own instantiation and ignores those overrides, which is why it is the right choice when you want exactly what this flake's CI built. When your `nixpkgs` *is* the flake's `nixpkgs`, the two resolve to the same derivation.
+
+`defaultDependencyGroups = [ ]` through the `default` overlay produces the bare build — the same derivation as `packages.<system>.minimal` — for a consumer that wants to add only the groups it names.
+
+### Consuming the Flake as a Library (`mkHermesAgent`)
+
+`flake.lib.mkHermesAgent` is the builder this flake uses for its own packages — `packages.<system>.minimal` and everything derived from it — and the supported entry point for a consumer that has to build the package itself, for example an overlay that patches the source first. Everything that makes a build reproducible (flake inputs, the `pm/lock.json` pins, the provenance embedded in `install-stamp.json`) lives in one place, so a consumer cannot drift into a second wiring set.
+
+```nix
+inputs.hermes-agent.lib.mkHermesAgent {
+  pkgs = pkgs;                    # required — the package set to build against
+  src = inputs.hermes-agent;      # source tree; defaults to the flake's own source
+  defaultDependencyGroups = [ ];  # groups this variant ships (default: none)
+  extraDependencyGroups = [ ];    # groups added on top of the variant's own
+  extraPythonPackages = [ ];      # extra Python packages for the sealed venv
+  distance = 0;                   # commits since the tagged release, for "+N.g<sha>"
+}
+```
+
+`src` is a source **tree**: either the flake set itself, which carries `rev`/`dirtyRev`/`lastModified` into the install stamp, or a plain path, which carries no provenance and gets the neutral values. The result is `callPackage`'d, so `makeOverridable` travels with it — `.override { ... }` and `.override (prev: ...)` both work, including appending to `prev.extraDependencyGroups`.
+
+Patching is the caller's job: point `src` at the patched tree, not at a patch series.
+
+```nix
+inputs.hermes-agent.lib.mkHermesAgent {
+  inherit pkgs;
+  src = builtins.path {
+    path = /path/to/already-patched/hermes-agent;
+    name = "hermes-agent-src";
+  };
+}
+```
+
+There is deliberately no `patches` argument. Applying patches inside the builder would mean reading `nix/hermes-agent.nix` and `hermes_cli/__init__.py` out of a derivation, i.e. import-from-derivation, and the same constraint rules out a store derivation as `src` — `src = pkgs.applyPatches { ... }` evaluates only with import-from-derivation enabled. If you patch at eval time, keep the wiring that patch step already requires, or materialise the patched tree once and hand `builtins.path` the result.
+
 ### Plugin Configuration
 
 Plugins still need to be enabled in `config.yaml`. Add them via the declarative settings:
