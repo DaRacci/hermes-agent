@@ -60,14 +60,32 @@ if [ -n "$LAST" ]; then
   fi
 fi
 
+# ── delta freshness ────────────────────────────────────────────────────────
+# Rebuilding is also what publishes the delta: main carries the current
+# ci/fork-maintenance.yml only if it was rebuilt after that file last changed.
+# Reusing main while the delta has moved would leave an edit to it inert on
+# maintenance until upstream happens to advance, so compare the content
+# directly. A delta file main does not have at all also counts as stale.
+DELTA_STALE=0
+if ! git show "$MAIN:.github/workflows/fork-maintenance.yml" 2>/dev/null | cmp -s - "$DELTA_WORKFLOW"; then
+  DELTA_STALE=1
+  note "delta      stale (main does not carry $DELTA_WORKFLOW)"
+else
+  note "delta      matches main"
+fi
+
 # ── rebuild main (or reuse the current one) ─────────────────────────────────
 # Never exit early here: patches may still be stale relative to main even when
 # upstream has not moved, and the workflow needs INTEGRATION_SHA on every run.
-if [ "$LAST" = "$UP" ]; then
+if [ "$LAST" = "$UP" ] && [ "$DELTA_STALE" = "0" ]; then
   log "upstream unchanged — reusing main $MAIN"
   NEWMAIN="$MAIN"
 else
-  log "rebuild main on $UP"
+  if [ "$LAST" = "$UP" ]; then
+    log "delta changed — rebuilding main on $UP"
+  else
+    log "rebuild main on $UP"
+  fi
   git checkout -q --detach "$UP"
   git rm -r -q .github/workflows 2>/dev/null || true
   mkdir -p .github/workflows
