@@ -59,6 +59,29 @@ jobs:
           rm -rf /tmp/maintenance
           git worktree add --detach /tmp/maintenance origin/maintenance
 
+      - name: Install commit signing key
+        # Without this every commit this job creates (delta rebuild, patch
+        # replays, integration merges) is unsigned, and each daily rebuild
+        # force-pushes those unsigned commits over the refs.
+        # The key is a dedicated CI key registered as an SSH *signing* key on
+        # RacciDev-Bot; it is not the container's personal key.
+        env:
+          COMMIT_SIGNING_KEY: ${{ secrets.COMMIT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COMMIT_SIGNING_KEY:-}" ]; then
+            echo "::warning::COMMIT_SIGNING_KEY is not set — commits from this run will be unsigned"
+            exit 0
+          fi
+          key="$RUNNER_TEMP/commit_signing"
+          install -m 600 /dev/null "$key"
+          printf '%s\n' "$COMMIT_SIGNING_KEY" > "$key"
+          git config --global gpg.format ssh
+          git config --global user.signingkey "$key"
+          git config --global commit.gpgsign true
+          git config --global tag.gpgsign true
+          echo "commit signing enabled (ssh, key in RUNNER_TEMP)"
+
       - name: Sync
         id: sync
         env:
