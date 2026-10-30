@@ -42,6 +42,7 @@
       ];
 
       imports = [
+        ./nix/exports.nix
         ./nix/packages.nix
         ./nix/overlays.nix
         ./nix/nixosModules.nix
