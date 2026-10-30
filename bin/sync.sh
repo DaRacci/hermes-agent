@@ -107,8 +107,16 @@ while IFS=$'\t' read -r order slug branch; do
   own=()
   while read -r c; do
     [ -z "$c" ] && continue
-    trailer=$(git log -1 --format='%(trailers:key=Upstream,valueonly)' "$c" | tr -d '\n')
-    [ -n "$trailer" ] && continue
+    # Skip maintenance-delta commits. Two tests because the very first delta
+    # commit predates the trailer: it deleted upstream's workflows, and
+    # replaying it is what makes GitHub reject the push ("GitHub App ...
+    # without workflows permission").
+    if [ -n "$(git log -1 --format='%(trailers:key=Upstream,valueonly)' "$c" | tr -d '\n')" ]; then
+      continue
+    fi
+    if git diff-tree --no-commit-id --name-only -r "$c" | grep -q '^\.github/workflows/'; then
+      continue
+    fi
     own+=("$c")
   done < <(git rev-list --reverse --no-merges "$OLD" --not "$UP")
 
