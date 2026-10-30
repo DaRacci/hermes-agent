@@ -31,6 +31,11 @@ run() {
 git config user.name  "RacciDev-Bot"
 git config user.email "agent@racci.dev"
 
+# The runner's checkout only knows origin; add upstream idempotently.
+if ! git remote get-url "$UPSTREAM" >/dev/null 2>&1; then
+  git remote add "$UPSTREAM" "https://github.com/NousResearch/hermes-agent.git"
+fi
+
 mkdir -p "$WT_ROOT"
 declare -A RESULT=()   # slug -> clean|conflict|skipped|missing
 declare -a CONFLICT_FILES=()
