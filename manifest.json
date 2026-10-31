@@ -144,6 +144,21 @@
         "optional-skills/creative/kanban-video-orchestrator/references/tool-matrix.md"
       ],
       "status": "active"
+    },
+    {
+      "slug": "nix-extra-packages-container",
+      "branch": "patch/nix-extra-packages-container",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 80,
+      "tests": [],
+      "files_glob": [
+        "nix/nixosModules.nix",
+        "nix/container-command.nix",
+        "nix/checks.nix",
+        "website/docs/getting-started/nix-setup.md"
+      ],
+      "status": "active"
     }
   ]
 }
