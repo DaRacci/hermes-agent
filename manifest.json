@@ -11,7 +11,8 @@
         "tests/hermes_cli/test_managed_install_shapes.py"
       ],
       "files_glob": [
-        "hermes_constants.py"
+        "hermes_constants.py",
+        "tests/hermes_cli/test_managed_install_shapes.py"
       ],
       "status": "active"
     },
@@ -25,8 +26,11 @@
         "tests/tools/test_web_providers_searxng.py"
       ],
       "files_glob": [
+        "plugins/web/_common.py",
         "plugins/web/searxng/**",
-        "tools/web_tools.py"
+        "tests/tools/test_web_providers_searxng.py",
+        "tools/web_tools.py",
+        "website/docs/user-guide/features/web-search.md"
       ],
       "status": "active"
     },
@@ -40,7 +44,8 @@
         "tests/tools/test_env_probe.py"
       ],
       "files_glob": [
-        "tools/env_probe.py"
+        "tools/env_probe.py",
+        "tests/tools/test_env_probe.py"
       ],
       "status": "active"
     },

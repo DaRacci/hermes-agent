@@ -25,6 +25,7 @@ DRY_RUN=${DRY_RUN:-0}
 MAINT_DIR=${MAINT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 
 SLUG=""
+PUSH_TO=""
 OPEN_PR=0
 FORCE=0
 
@@ -40,6 +41,7 @@ while [ $# -gt 0 ]; do
     --submit)  SLUG=${2:-}; shift 2 ;;
     --open-pr) OPEN_PR=1; shift ;;
     --force)   FORCE=1; shift ;;
+    --push-to) PUSH_TO=${2:-}; shift 2 ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -108,17 +110,20 @@ fi
 # ── the guard: the diff must be exactly what the manifest claims ────────────
 changed=$(git diff --name-only "upstream/main...HEAD")
 [ -n "$changed" ] || die "empty diff against upstream/main"
-bad=$(CHANGED="$changed" GLOBS="$GLOBS" python3 - <<'PY'
-import fnmatch, os, sys
+bad=$(CHANGED="$changed" GLOBS="$GLOBS" python3 - <<'PYGLOB'
+import os, re
 pat = []
 for g in os.environ["GLOBS"].splitlines():
     g = g.strip()
-    if g:
-        pat.append(g.replace("**", "\x00").replace("*", "[^/]*").replace("\x00", ".*"))
-bad = [f for f in os.environ["CHANGED"].split()
-       if not any(fnmatch.fnmatchcase(f, p) or f.startswith(p.rstrip("*")) for p in pat)]
+    if not g:
+        continue
+    # `**` crosses directory separators, `*` does not: a glob is not a regex, and
+    # converting to a fnmatch pattern cannot express the difference.
+    rx = g.replace("**", "\x00").replace("*", "[^/]*").replace("\x00", ".*")
+    pat.append(re.compile("^" + rx + "$"))
+bad = [f for f in os.environ["CHANGED"].split() if not any(p.match(f) for p in pat)]
 print("\n".join(bad))
-PY
+PYGLOB
 )
 if [ -n "$bad" ]; then
   printf '\n!! %s\n' "diff touches files the manifest does not claim for $SLUG:" >&2
@@ -130,6 +135,18 @@ note "diff scope ok: $(echo "$changed" | tr '\n' ' ')"
 log "result"
 git log --oneline "upstream/main..HEAD"
 git diff --stat "upstream/main...HEAD"
+
+if [ -n "$PUSH_TO" ]; then
+  TGT_REMOTE=${PUSH_TO%%:*}
+  TGT_BRANCH=${PUSH_TO#*:}
+  TGT_SHA=$(git ls-remote --heads "$TGT_REMOTE" "refs/heads/$TGT_BRANCH" | cut -f1)
+  [ -n "$TGT_SHA" ] || die "$TGT_REMOTE has no branch $TGT_BRANCH — check the PR head name"
+  log "force-push to $TGT_REMOTE:$TGT_BRANCH ($(echo "$TGT_SHA" | cut -c1-10) -> $(git rev-parse --short HEAD))"
+  note "this rewrites a public PR head; the lease refuses if it moved since the read"
+  run git push --force-with-lease="refs/heads/$TGT_BRANCH:$TGT_SHA" "$TGT_REMOTE" "HEAD:refs/heads/$TGT_BRANCH"
+  echo "PUSHED=$TGT_REMOTE:$TGT_BRANCH"
+  exit 0
+fi
 
 log "push submit/$SLUG"
 if git rev-parse --verify -q "refs/remotes/origin/submit/$SLUG" >/dev/null; then
