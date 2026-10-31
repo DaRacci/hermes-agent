@@ -811,6 +811,80 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── Container mode honours extraPackages ─────────────────────────
+        # extraPackages is documented as packages on the agent's PATH, and
+        # container mode ignored it: the entrypoint built its PATH from the
+        # venv and the image only. The container now mounts a bin env at
+        # /opt/hermes-extra-bin, read-only, and the entrypoint puts it after
+        # the venv. This renders the unit text for both cases and asserts the
+        # mount, its exact mode, and the guard, without a container daemon.
+        container-extra-packages =
+          let
+            prestartOf =
+              settings:
+              (evalNixosModule ({ enable = true; container.enable = true; } // settings))
+              .config.systemd.services.hermes-agent.preStart;
+
+            plain = prestartOf { };
+            withExtras = prestartOf { extraPackages = [ pkgs.ast-grep ]; };
+
+            # The guard and argv are the strings the unit and the entrypoint
+            # interpolate, so asserting on them asserts on what runs.
+            cfgPlain = (evalNixosModule { enable = true; container.enable = true; }).config.services.hermes-agent;
+            command = import ./container-command.nix {
+              inherit lib pkgs;
+              cfg = cfgPlain;
+            };
+            commandWithExtras = import ./container-command.nix {
+              inherit lib pkgs;
+              cfg = cfgPlain;
+              containerExtraBin = pkgs.ast-grep;
+            };
+
+            firstLineWith =
+              needle: text: lib.findFirst (line: lib.hasInfix needle line) "" (lib.splitString "\n" text);
+
+            mountOf =
+              text:
+              builtins.match " *--volume (/nix/store/[0-9a-z]+-hermes-container-extra-bin):/opt/hermes-extra-bin:ro.*"
+                (firstLineWith "/opt/hermes-extra-bin" text);
+
+            identityOf = text: builtins.match ".*!= \"([0-9a-f]{64})\".*" (firstLineWith ".container-identity" text);
+
+            plainIdentity = identityOf plain;
+            extrasIdentity = identityOf withExtras;
+
+            extraBinArgs =
+              builtins.filter (arg: lib.hasInfix "/opt/hermes-extra-bin" arg) commandWithExtras.argv;
+            extraBinArgsPlain = builtins.filter (arg: lib.hasInfix "/opt/hermes-extra-bin" arg) command.argv;
+
+            failures =
+              lib.optional (mountOf plain != null) "an empty extraPackages must not mount /opt/hermes-extra-bin, got: ${firstLineWith "/opt/hermes-extra-bin" plain}"
+              ++ lib.optional (mountOf withExtras == null) "extraPackages must mount a hermes-container-extra-bin store path at /opt/hermes-extra-bin:ro, got: ${firstLineWith "/opt/hermes-extra-bin" withExtras}"
+              ++ lib.optional (extraBinArgsPlain != [ ]) "a config without extraPackages must not carry an extra-bin argument, got: ${toString extraBinArgsPlain}"
+              ++ lib.optional (
+                extraBinArgs != [ "--volume ${pkgs.ast-grep}:/opt/hermes-extra-bin:ro" ]
+              ) "the mount must be exactly one `--volume <storepath>:/opt/hermes-extra-bin:ro`, got: ${toString extraBinArgs}"
+              ++ lib.optional (
+                !lib.hasInfix ''if [ -d /opt/hermes-extra-bin ]; then'' command.extraBinPathGuard
+              ) "the entrypoint must guard the directory before it goes on PATH"
+              ++ lib.optional (
+                !lib.hasInfix ''export PATH="/opt/hermes-extra-bin:$PATH"'' command.extraBinPathGuard
+              ) "the entrypoint must prepend /opt/hermes-extra-bin to PATH"
+              ++ lib.optional (plainIdentity == null || extrasIdentity == null) "both unit texts must carry a container identity"
+              ++ lib.optional (plainIdentity == extrasIdentity) "extraPackages must change the container identity, or docker create never adds the mount";
+          in
+          pkgs.runCommand "hermes-container-extra-packages" { } (
+            if failures != [ ] then
+              throw "Container extraPackages check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: extraPackages mounts /opt/hermes-extra-bin read-only and the entrypoint prepends it after the venv"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── How the backend waits for its bind target ────────────────────
         # The backend binds to `host` immediately by default. A unit that
         # starts at boot can lose the race against the daemon that supplies
