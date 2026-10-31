@@ -815,9 +815,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # extraPackages is documented as packages on the agent's PATH, and
         # container mode ignored it: the entrypoint built its PATH from the
         # venv and the image only. The container now mounts a bin env at
-        # /opt/hermes-extra-bin, read-only, and the entrypoint puts it after
-        # the venv. This renders the unit text for both cases and asserts the
-        # mount, its exact mode, and the guard, without a container daemon.
+        # /opt/hermes-extra-bin, read-only, and the entrypoint puts its bin/
+        # directory after the venv. This renders the unit text and the PATH
+        # setup for both cases and asserts the mount, its exact mode, the
+        # directory that goes on PATH, and the order of the two exports,
+        # without a container daemon.
         container-extra-packages =
           let
             prestartOf =
@@ -828,8 +830,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             plain = prestartOf { };
             withExtras = prestartOf { extraPackages = [ pkgs.ast-grep ]; };
 
-            # The guard and argv are the strings the unit and the entrypoint
-            # interpolate, so asserting on them asserts on what runs.
+            # The argv and the PATH setup are the strings the unit and the
+            # entrypoint interpolate, so asserting on them asserts on what runs.
             cfgPlain = (evalNixosModule { enable = true; container.enable = true; }).config.services.hermes-agent;
             command = import ./container-command.nix {
               inherit lib pkgs;
@@ -858,6 +860,16 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               builtins.filter (arg: lib.hasInfix "/opt/hermes-extra-bin" arg) commandWithExtras.argv;
             extraBinArgsPlain = builtins.filter (arg: lib.hasInfix "/opt/hermes-extra-bin" arg) command.argv;
 
+            # buildEnv links the packages' executables into $out/bin, so the
+            # directory on PATH is the mount plus /bin. The assertions below
+            # carry that literal so a regression to the env root (which has no
+            # executables) fails here instead of shipping. Exactly two parts
+            # prove the export appears once, and the part before it proves the
+            # venv export comes first.
+            venvExport = ''export PATH="$TARGET_HOME/.venv/bin:$PATH"'';
+            extraBinExport = ''export PATH="/opt/hermes-extra-bin/bin:$PATH"'';
+            pathParts = lib.splitString extraBinExport command.pathSetup;
+
             failures =
               lib.optional (mountOf plain != null) "an empty extraPackages must not mount /opt/hermes-extra-bin, got: ${firstLineWith "/opt/hermes-extra-bin" plain}"
               ++ lib.optional (mountOf withExtras == null) "extraPackages must mount a hermes-container-extra-bin store path at /opt/hermes-extra-bin:ro, got: ${firstLineWith "/opt/hermes-extra-bin" withExtras}"
@@ -866,11 +878,17 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 extraBinArgs != [ "--volume ${pkgs.ast-grep}:/opt/hermes-extra-bin:ro" ]
               ) "the mount must be exactly one `--volume <storepath>:/opt/hermes-extra-bin:ro`, got: ${toString extraBinArgs}"
               ++ lib.optional (
-                !lib.hasInfix ''if [ -d /opt/hermes-extra-bin ]; then'' command.extraBinPathGuard
-              ) "the entrypoint must guard the directory before it goes on PATH"
+                command.containerExtraBinPath != "/opt/hermes-extra-bin/bin"
+              ) "the PATH entry must be the env's bin/ directory (buildEnv links packages' bin/* into $out/bin), got: ${command.containerExtraBinPath}"
               ++ lib.optional (
-                !lib.hasInfix ''export PATH="/opt/hermes-extra-bin:$PATH"'' command.extraBinPathGuard
-              ) "the entrypoint must prepend /opt/hermes-extra-bin to PATH"
+                !lib.hasInfix ''if [ -d /opt/hermes-extra-bin/bin ]; then'' command.pathSetup
+              ) "the entrypoint must guard /opt/hermes-extra-bin/bin before it goes on PATH"
+              ++ lib.optional (
+                lib.length pathParts != 2
+              ) "the entrypoint must prepend /opt/hermes-extra-bin/bin to PATH exactly once, got: ${command.pathSetup}"
+              ++ lib.optional (
+                lib.length pathParts == 2 && !lib.hasInfix venvExport (builtins.head pathParts)
+              ) "the venv must stay ahead of /opt/hermes-extra-bin/bin on PATH, got: ${command.pathSetup}"
               ++ lib.optional (plainIdentity == null || extrasIdentity == null) "both unit texts must carry a container identity"
               ++ lib.optional (plainIdentity == extrasIdentity) "extraPackages must change the container identity, or docker create never adds the mount";
           in
@@ -879,7 +897,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               throw "Container extraPackages check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
             else
               ''
-                echo "PASS: extraPackages mounts /opt/hermes-extra-bin read-only and the entrypoint prepends it after the venv"
+                echo "PASS: extraPackages mounts /opt/hermes-extra-bin read-only and the entrypoint prepends its bin/ after the venv"
                 mkdir -p $out
                 echo "ok" > $out/result
               ''
