@@ -84,6 +84,8 @@ $HERMES_HOME/skills/        Installed skills
 
 Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile is active, resolve the real home from `$HERMES_HOME` — never hardcode `~/.hermes`.
 
+**The CLI targets the default profile unless told otherwise.** `hermes <cmd>` writes to `~/.hermes/` even when you are working inside a named profile's session; pass `hermes -p <profile> <cmd>` to act on that profile. A cron job created without `-p` lands in `~/.hermes/cron/jobs.json` and never runs as the profile that wanted it, and the same silent split applies to cron, kanban boards and per-profile state generally. When a job, card or setting "disappears" or turns up somewhere unexpected, first check which profile the command actually ran as.
+
 ## Routing Table — load the reference for the task
 
 | User wants... | Load |
@@ -107,6 +109,7 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | Windows-specific issues (keybinds, WinError 10106, BOM) | `references/windows-quirks.md` |
 | Debugging: voice, tools missing, gateway, aux models | `references/troubleshooting.md` |
 | Contributing code: adding tools, slash commands, tests | `references/contributor-guide.md` |
+| A slash command missing from TUI autocomplete, or working in the CLI but not the TUI | `references/debugging-tui-commands.md` |
 | delegate_task "capped at N" reports | `references/delegate-task-concurrency-diagnosis.md` |
 | "Can app X use my Nous Portal subscription/OAuth?" | `references/portal-auth-for-third-party-apps.md` |
 | Connecting a messaging platform (Telegram, Discord, Slack, WhatsApp, …) | docs: `/user-guide/messaging` |
