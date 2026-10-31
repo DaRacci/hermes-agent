@@ -125,14 +125,19 @@ zero outside a kanban task (footprint ladder rung 3).
   unlink, comment, attach, attachments, attach-rm, complete, request-review, request-changes,
   reopen-review, block, unblock, archive, tail`, plus `watch, stats, runs, log, assignees, heartbeat,
   notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls` (root).
-- **Toolset:** `tools/kanban_tools.py` — `kanban_show, kanban_complete, kanban_request_review,
-  kanban_request_changes, kanban_block, kanban_schedule, kanban_heartbeat, kanban_comment,
-  kanban_create, kanban_link,
-  kanban_attach, kanban_attach_url, kanban_attachments`; platforms whose saved selection enables
-  `kanban` (`hermes tools enable kanban --platform <p>`; default-off, in `CONFIGURABLE_TOOLSETS`) get
-  the full set plus `kanban_list`/`kanban_unblock` for board routing. The check_fn reads the schema
-  build's own selection (`tools/kanban_toolset_context.py`), never the legacy top-level `toolsets`
-  key alone.
+- **Toolset:** `tools/kanban_tools.py` backs TWO toolsets. `kanban` is the worker surface —
+  `kanban_show, kanban_complete, kanban_request_review, kanban_request_changes, kanban_block,
+  kanban_schedule, kanban_heartbeat, kanban_comment, kanban_attach, kanban_attach_url,
+  kanban_attachments` — and is all a dispatched worker gets. `kanban_orchestrator` is that list plus
+  board routing/fan-out (`kanban_list, kanban_create, kanban_link, kanban_unblock`); it is the ONLY
+  toolset naming those four, and profiles opt in per platform with
+  `hermes tools enable kanban_orchestrator --platform <p>` (both default-off, in
+  `CONFIGURABLE_TOOLSETS`). A worker never gets the routing tools even when its profile enables
+  `kanban_orchestrator`: its schema selection drops that toolset, and the four handlers refuse a
+  `HERMES_KANBAN_TASK` caller (`_require_orchestrator_tool`). Disabling `kanban` also disables
+  `kanban_orchestrator` (`TOOLSET_DISABLE_EXPANSIONS`), so "kanban off" means both. The check_fn
+  reads the schema build's own selection (`tools/kanban_toolset_context.py`), never the legacy
+  top-level `toolsets` key alone.
 - **Dispatcher:** long-lived loop (default 60s) that reclaims stale claims, promotes ready tasks,
   atomically claims, and spawns assigned profiles. Runs **inside the gateway** by default
   (`kanban.dispatch_in_gateway: true`). Standalone: `plugins/kanban/systemd/hermes-kanban-dispatcher.service`.
@@ -162,7 +167,10 @@ recycled PID gets killed on reclaim.
   via a profile's toolset) and an inherited `HERMES_KANBAN_TASK` (delegate children, cron runs beside
   a worker) are not ownership. The kanban guidance (`agent_init`, `system_prompt` fallback) and the
   stop nudge resolve the task via `agent/delegation_context.py::owned_kanban_task()`; other readers
-  pair their env read with `is_dispatcher_owned_worker_context()`.
+  pair their env read with `is_dispatcher_owned_worker_context()`. The injected block is
+  `agent/prompt_builder.py::build_kanban_guidance(valid_tool_names)`: its fan-out half
+  (`created_cards`, profile discovery, `kanban_create` parentage) rides only when `kanban_create` is
+  in the session's schema, so a worker's prompt never names a tool it cannot call.
 - **Descendant fence is a path, not a flag.** A delegated child's Kanban marker
   (`agent/delegation_context.py::DELEGATED_CHILD_ENV_MARKER`) carries the fenced board ROOT;
   `kanban_path_is_fenced(path)` denies mutations only on the dispatcher-pinned `HERMES_KANBAN_DB`
