@@ -199,6 +199,16 @@ jobs:
             echo "ok  $a"
           done
 
+      # The patchset's string-level assertions live in nix/checks.nix and build
+      # instantly. `nix eval` cannot reach them, so without this step a check
+      # added by a patch is never executed by CI. Add each new cheap check here.
+      - name: Container extraPackages check
+        if: steps.scope.outputs.run == '1'
+        run: |
+          set -euo pipefail
+          nix build --no-link ".#checks.x86_64-linux.container-extra-packages"
+          echo "ok  container-extra-packages"
+
       - name: Overlay and builder contract
         if: steps.scope.outputs.run == '1'
         run: |
