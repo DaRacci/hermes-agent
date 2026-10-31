@@ -162,7 +162,7 @@ custom_toolsets:
 A handful of tools have an additional availability check on top of toolset membership and are **not** turned on by `all`/`*` alone:
 
 - **Capability-gated** tools (browser, `computer_use`, `code_execution`, Feishu, cronjob) appear only when their backend/credential prerequisite is configured.
-- **Workflow-gated** tools — the `kanban` toolset — are deliberately opt-in. `all`/`*` does **not** enable kanban; you must list `kanban` explicitly (or be a dispatcher-spawned worker with `HERMES_KANBAN_TASK` set). Kanban tools mutate shared board state, so they stay off by default even under `all`.
+- **Workflow-gated** tools — the `kanban` (worker) and `kanban_orchestrator` (board routing) toolsets — are deliberately opt-in. `all`/`*` does **not** enable either; you must list the one you need (or be a dispatcher-spawned worker with `HERMES_KANBAN_TASK` set, which receives `kanban` alone). Kanban tools mutate shared board state, so they stay off by default even under `all`, and `kanban_orchestrator` — the only toolset that can create or link cards — is never inferred from a composite.
 
 ## Relationship to `hermes tools`
 
