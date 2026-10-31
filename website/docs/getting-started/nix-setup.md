@@ -770,7 +770,7 @@ The Nix-built binary works inside the Ubuntu container because `/nix/store` is b
 
 ### extraPackages in Container Mode
 
-`extraPackages` puts packages on the agent's `PATH` in every deployment mode. Container mode builds them into one directory and mounts it read-only at `/opt/hermes-extra-bin`:
+`extraPackages` puts packages on the agent's `PATH` in every deployment mode. Container mode links the packages' binaries into one directory, mounts it read-only at `/opt/hermes-extra-bin`, and puts `/opt/hermes-extra-bin/bin` on the agent's `PATH`:
 
 ```nix
 services.hermes-agent = {
@@ -782,12 +782,12 @@ services.hermes-agent = {
 The container's `PATH` resolves in this order:
 
 1. `$HOME/.venv/bin` — the agent's writable Python, where `pip install` lands
-2. `/opt/hermes-extra-bin` — the packages above
+2. `/opt/hermes-extra-bin/bin` — the packages above
 3. the image's own directories (`/usr/local/bin`, `/usr/bin`, ...)
 
 The venv comes first because it is the only writable interpreter: a store path that shadowed `python` or `pip` would break the agent's own runtime, and the mount is read-only. The extra directory still outranks the image's tools, which is the point of the option.
 
-The directory is one `buildEnv`, so two packages that ship the same file name fail the rebuild instead of one silently shadowing the other.
+The packages are linked into one `buildEnv`, so two packages that ship the same file name with different contents fail the rebuild instead of one silently shadowing the other. (Identical contents are merged, which is what `buildEnv` does by default.)
 
 Setting `extraPackages` recreates the container once, because `docker create` is the only place that can add the mount. Configurations that leave the option empty are not recreated.
 
@@ -1075,7 +1075,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
-| `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them. Container mode also mounts them read-only at `/opt/hermes-extra-bin` |
+| `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them. Container mode also mounts them read-only at `/opt/hermes-extra-bin` and puts `/opt/hermes-extra-bin/bin` on `PATH` |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Use the selected package’s `python.pkgs` |
 | `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras added to the groups `package` already ships (e.g. `["google-meet"]`). Resolved by uv — no collisions |

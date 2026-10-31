@@ -1,4 +1,4 @@
-# nix/container-command.nix — the container's create call and PATH guard
+# nix/container-command.nix — the container's create call and PATH setup
 #
 # nix/nixosModules.nix interpolates both into the unit and nix/checks.nix
 # asserts on them, so the container's command surface can be checked without a
@@ -14,6 +14,12 @@ let
   containerDataDir = "/data";
   containerHomeDir = "/home/hermes";
 
+  # buildEnv links each package's bin/ into its own $out/bin; it does not
+  # flatten them into the env root. So the mount point is the env root and the
+  # executables are one level down.
+  containerExtraBinMount = "/opt/hermes-extra-bin";
+  containerExtraBinPath = "${containerExtraBinMount}/bin";
+
   containerBin =
     if cfg.container.backend == "docker" then
       "${pkgs.docker}/bin/docker"
@@ -23,7 +29,7 @@ let
   # The mount source is a store path that appears nowhere else, so this
   # argument is what keeps it reachable from the system closure.
   extraBinArgs = lib.optionals (containerExtraBin != null) [
-    "--volume ${containerExtraBin}:/opt/hermes-extra-bin:ro"
+    "--volume ${containerExtraBin}:${containerExtraBinMount}:ro"
   ];
 
   # One element per line of the rendered shell command.
@@ -58,15 +64,28 @@ let
 in
 {
   inherit containerName containerDataDir containerHomeDir containerBin argv;
+  inherit containerExtraBinMount containerExtraBinPath;
 
   create = "${containerBin} ${lib.concatMapStringsSep continuation toString argv}";
 
-  # nixosModules.nix puts this in the entrypoint after the venv block. The venv
-  # is the only writable interpreter, so a store path must not shadow python or
-  # pip, and the extra directory still wins over the image's own tools.
-  extraBinPathGuard = ''
-    if [ -d /opt/hermes-extra-bin ]; then
-      export PATH="/opt/hermes-extra-bin:$PATH"
+  # The entrypoint's whole PATH setup, as one string so that the order is
+  # assertable. nixosModules.nix interpolates it immediately before the
+  # privilege-drop exec.
+  #
+  # The venv comes first: it is the only writable interpreter, so a store path
+  # that shadowed python or pip would break the agent's own runtime, and the
+  # mount is read-only. The extra directory still outranks the image's tools,
+  # which is what extraPackages is for. A container that was not recreated has
+  # no mount, so the guard skips the stanza.
+  pathSetup = ''
+    # Put the agent venv first on PATH so python/pip resolve to writable copies
+    if [ -d "$TARGET_HOME/.venv/bin" ]; then
+      export PATH="$TARGET_HOME/.venv/bin:$PATH"
+    fi
+
+    # Consumer-declared packages next, ahead of the image's own tools.
+    if [ -d ${containerExtraBinPath} ]; then
+      export PATH="${containerExtraBinPath}:$PATH"
     fi
   '';
 }
