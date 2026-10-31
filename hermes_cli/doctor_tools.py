@@ -92,14 +92,18 @@ _TERMUX_INSTALL_ALL_FALLBACK_NOTES = (
 
 def _is_kanban_worker_env_gate(item: dict) -> bool:
     """Return True when Kanban is unavailable only because this is not a worker process."""
+    from toolsets import KANBAN_TOOLSET_NAMES
+
     tools = item.get("tools") or []
-    return (item.get("name") == "kanban" and not os.environ.get("HERMES_KANBAN_TASK")
+    return (item.get("name") in KANBAN_TOOLSET_NAMES and not os.environ.get("HERMES_KANBAN_TASK")
             and bool(tools) and all(str(tool).startswith("kanban_") for tool in tools))
 
 
 def _doctor_tool_availability_detail(toolset: str) -> str:
     """Optional explanatory suffix for toolsets whose doctor status needs context."""
-    if toolset == "kanban" and not os.environ.get("HERMES_KANBAN_TASK"):
+    from toolsets import KANBAN_TOOLSET_NAMES
+
+    if toolset in KANBAN_TOOLSET_NAMES and not os.environ.get("HERMES_KANBAN_TASK"):
         return "(runtime-gated; loaded only for dispatcher-spawned workers)"
     return ""
 
@@ -140,8 +144,8 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     for item in unavailable:
         if not _is_kanban_worker_env_gate(item):
             updated_unavailable.append(item)
-        elif "kanban" not in updated_available:
-            updated_available.append("kanban")
+        elif item["name"] not in updated_available:
+            updated_available.append(item["name"])
     return updated_available, updated_unavailable
 
 

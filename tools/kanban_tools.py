@@ -1,9 +1,12 @@
 """Kanban tools — structured tool-call surface for worker + orchestrator agents.
 
 Registered only under the dispatcher (``HERMES_KANBAN_TASK`` set) or when the profile
-enables the ``kanban`` toolset. Tools rather than ``hermes kanban`` shell-outs: they run
-in the agent's process (reach ``kanban.db`` from a container/SSH terminal backend, no
-shlex quoting of JSON metadata, structured-JSON failures). Humans use CLI/dashboard.
+enables one of the kanban toolsets. The toolset split is the capability boundary: worker
+tools register under ``kanban``; ``kanban_list`` / ``kanban_create`` / ``kanban_link`` /
+``kanban_unblock`` register under ``kanban_orchestrator`` and refuse a worker context.
+Tools rather than ``hermes kanban`` shell-outs: they run in the agent's process (reach
+``kanban.db`` from a container/SSH terminal backend, no shlex quoting of JSON metadata,
+structured-JSON failures). Humans use CLI/dashboard.
 """
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ KANBAN_LIST_MAX_LIMIT = 200
 
 def _profile_has_kanban_toolset() -> bool:
     from tools.kanban_toolset_context import kanban_toolset_requested
+    from toolsets import KANBAN_TOOLSET_NAMES
 
     requested = kanban_toolset_requested()
     if requested:
@@ -43,7 +47,7 @@ def _profile_has_kanban_toolset() -> bool:
     try:
         config = load_config()
         # Preserve the legacy profile-wide opt-in for callers using bundles.
-        if "kanban" in (config.get("toolsets") or []):
+        if KANBAN_TOOLSET_NAMES & set(config.get("toolsets") or []):
             return True
         if requested is not None:
             # Never borrow another platform's opt-in during schema assembly.
@@ -54,7 +58,7 @@ def _profile_has_kanban_toolset() -> bool:
 
         platforms = config.get("platform_toolsets") or {}
         return any(
-            "kanban" in _get_platform_tools(config, platform, include_default_mcp_servers=False)
+            KANBAN_TOOLSET_NAMES & set(_get_platform_tools(config, platform, include_default_mcp_servers=False))
             for platform, names in platforms.items() if isinstance(names, list)
         )
     except Exception:
@@ -98,7 +102,13 @@ def _check_kanban_mode() -> bool:
 
 @no_cache_check_fn
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers."""
+    """Board-routing tools (list/create/link/unblock): hidden from task workers.
+
+    These register under the ``kanban_orchestrator`` toolset; the dispatcher also
+    strips that toolset from a worker session's selection. This check is the
+    in-process half of the boundary, shared with schemas built by a spawn path
+    that still hands the orchestrator toolset to a worker.
+    """
     return _visible(to_env_worker=False)
 
 
@@ -210,8 +220,9 @@ def _require_task_id(args: dict) -> str:
     """Resolve the target task or reject with a message the caller can act on.
 
     The env default only exists for a dispatcher-spawned worker; every other
-    caller must name a task, so a rejection points at ``kanban_list`` instead of
-    an env var a chat caller cannot set (#91431).
+    caller must name a task. The rejection names the CLI (`hermes kanban list`)
+    rather than `kanban_list`: that tool is part of the orchestrator toolset and
+    may not be in this caller's schema at all (#91431).
     """
     tid = _default_task_id(args.get("task_id"))
     if tid:
@@ -225,7 +236,8 @@ def _require_task_id(args: dict) -> str:
             "task_id.")
     raise _Reject(
         "task_id is required: this session has no dispatcher-assigned task to "
-        "default to. Pass an explicit task_id; discover task ids with kanban_list.")
+        "default to. Pass an explicit task_id; list ids with `hermes kanban list` "
+        "or from an orchestrator session's kanban_list.")
 
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
@@ -260,7 +272,8 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     if env_tid and tid != env_tid:
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
-            f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
+            f"to hand off information, and report any follow-up work in this card's "
+            f"completion summary — only an orchestrator session can file one.")
 
 
 def _worker_guard(tool_name: str, args: dict) -> str:
@@ -299,13 +312,15 @@ def _worker_guard(tool_name: str, args: dict) -> str:
 
 
 def _require_orchestrator_tool(tool_name: str) -> None:
-    """The check_fn already hides orchestrator tools from workers; this catches
-    a stale registration or test harness routing a worker here anyway."""
+    """The check_fn already hides orchestrator tools from workers, and the dispatcher
+    strips ``kanban_orchestrator`` from a worker's toolset selection; this catches a
+    stale registration or a caller routing a worker here anyway."""
     if os.environ.get("HERMES_KANBAN_TASK"):
         raise _Reject(
-            f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
-            "kanban_complete, kanban_request_review, kanban_request_changes, kanban_block, "
-            "kanban_heartbeat, or kanban_comment for their assigned task.")
+            f"{tool_name} is orchestrator-only; a dispatcher-spawned worker reports "
+            "follow-up work in its completion summary instead of filing it. For its "
+            "assigned task, use kanban_complete, kanban_request_review, "
+            "kanban_request_changes, kanban_block, kanban_heartbeat, or kanban_comment.")
 
 
 @contextmanager
@@ -671,8 +686,9 @@ def _handle_show(args: dict, **kw) -> str:
             "current_task": None,
             "hint": (
                 "No dispatcher-assigned task in this session, so there is no "
-                "task to show by default. Call kanban_list to see task ids on "
-                "the board, then kanban_show(task_id=<id>) for full state."),
+                "task to show by default. List ids with `hermes kanban list` (or "
+                "kanban_list in an orchestrator session), then "
+                "kanban_show(task_id=<id>) for full state."),
         })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
@@ -1093,8 +1109,9 @@ def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
 
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
-    """Create a (child) task; orchestrator workers use this to fan out."""
+    """Create a (child) task; an orchestrator session uses this to fan out."""
     _reject_delegated_child_mutation("kanban_create")
+    _require_orchestrator_tool("kanban_create")
     title = _require_text(args, "title")
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
@@ -1274,9 +1291,10 @@ def _handle_unblock(args: dict, **kw) -> str:
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact (cycles/self-links/running
-    children → ValueError). A worker linking its OWN running card proves ownership
-    with its run id so the dependency-block handoff still works."""
+    children → ValueError). Orchestrator-only: a worker parks its own card with
+    ``kanban_block(kind="dependency")`` instead of linking it."""
     _reject_delegated_child_mutation("kanban_link")
+    _require_orchestrator_tool("kanban_link")
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
@@ -1290,8 +1308,10 @@ def _handle_link(args: dict, **kw) -> str:
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# Board routing + fan-out: register under `kanban_orchestrator` and stay out of every
+# worker schema. `_check_kanban_orchestrator_mode` hides them from a HERMES_KANBAN_TASK
+# caller, and model_tools strips the toolset from a worker's selection entirely.
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_create", "kanban_link", "kanban_unblock"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1311,5 +1331,6 @@ _TOOLS = (
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
-    registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
+    _toolset = "kanban_orchestrator" if _name in _ORCHESTRATOR_TOOLS else "kanban"
+    registry.register(name=_name, toolset=_toolset, schema=_sch, handler=_handler, emoji=_emoji,
                       check_fn=_gate)

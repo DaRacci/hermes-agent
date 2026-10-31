@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterable, Iterator, Optional
 
+from toolsets import KANBAN_TOOLSET_NAMES
+
 _requested: ContextVar[Optional[bool]] = ContextVar("kanban_toolset_requested", default=None)
 
 
@@ -21,7 +23,7 @@ def kanban_toolset_requested() -> Optional[bool]:
 @contextmanager
 def scoped_kanban_toolset_selection(toolsets: Optional[Iterable[str]]) -> Iterator[None]:
     """An all/default selection is not an explicit workflow opt-in."""
-    token = _requested.set("kanban" in (toolsets or ()))
+    token = _requested.set(bool(KANBAN_TOOLSET_NAMES & set(toolsets or ())))
     try:
         yield
     finally:
