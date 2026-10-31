@@ -137,9 +137,91 @@ jobs:
           printf 'targeted tests: %s\n' "${files[*]}"
           HERMES_PYTHON="$PWD/.venv/bin/python" bash scripts/run_tests.sh "${files[@]}"
 
+
+  # The patchset's only test. The pivot python gate above cannot see nix files,
+  # so without this the flake changes ship on the strength of a local eval.
+  # Runs only when the integration actually differs from upstream in nix terms.
+  nix:
+    name: Nix gate on integration
+    needs: maintain
+    if: always() && inputs.dry_run != true && needs.maintain.outputs.integration_sha != '' && needs.maintain.outputs.integration_changed == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout integration
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.maintain.outputs.integration_sha }}
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Does the patchset touch nix?
+        id: scope
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "${{ needs.maintain.outputs.upstream_sha }}"..HEAD -- flake.nix flake.lock nix/ || true)
+          if [ -n "$changed" ]; then
+            printf 'run=1\n' >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$changed"
+          else
+            printf 'run=0\n' >> "$GITHUB_OUTPUT"
+            echo "no nix changes in this integration"
+          fi
+
+      # allow-import-from-derivation=false is the design driver of the builder:
+      # an IFD-dependent flake must fail here, not on a user's machine.
+      - name: Install nix
+        if: steps.scope.outputs.run == '1'
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            allow-import-from-derivation = false
+
+      - name: Version is derived, not 0.0.0
+        if: steps.scope.outputs.run == '1'
+        run: |
+          set -euo pipefail
+          for a in default minimal messaging; do
+            v=$(nix eval --raw ".#packages.x86_64-linux.$a.version")
+            echo "$a = $v"
+            [ "$v" != "0.0.0" ] || { echo "::error::$a still ships 0.0.0"; exit 1; }
+          done
+
+      - name: Every package instantiates
+        if: steps.scope.outputs.run == '1'
+        run: |
+          set -euo pipefail
+          for a in default minimal messaging desktop tui web webapp sandbox; do
+            nix eval --raw ".#packages.x86_64-linux.$a.drvPath" > /dev/null
+            echo "ok  $a"
+          done
+
+      - name: Overlay and builder contract
+        if: steps.scope.outputs.run == '1'
+        run: |
+          set -euo pipefail
+          nix eval --impure --raw --expr '
+            let
+              f = builtins.getFlake (toString ./.);
+              mk = system: overlays: import f.inputs.nixpkgs { inherit system overlays; };
+              with_ = mk "x86_64-linux" [ f.overlays.default ];
+              locked = mk "x86_64-linux" [ f.overlays.locked ];
+              drv = p: builtins.unsafeDiscardStringContext p.drvPath;
+              shipped = f.packages.x86_64-linux.default;
+            in
+              if drv with_.hermes-agent != drv shipped
+              then throw "overlays.default drifted from packages.default"
+              else if drv locked.hermes-agent != drv shipped
+              then throw "overlays.locked drifted from packages.default"
+              else "${with_.hermes-agent.version}|${with_.hermes-agent.python.pkgs.python.version}"
+          '
+
   verdict:
     name: Integration verdict
-    needs: [maintain, ci]
+    needs: [maintain, ci, nix]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -150,5 +232,11 @@ jobs:
           echo "patches not applied: ${failed:-unknown}"
           if [ "${failed:-1}" != "0" ]; then
             echo "::error::integration is missing $failed patch(es); see the conflict issues"
+            exit 1
+          fi
+          nix_result="${{ needs.nix.result }}"
+          echo "nix gate: ${nix_result:-unknown}"
+          if [ "${nix_result}" = "failure" ]; then
+            echo "::error::the nix gate failed on this integration"
             exit 1
           fi
