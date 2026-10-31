@@ -279,7 +279,10 @@ def _tool_defs_cache_key(
 
 def _apply_toolset_selection(tools: set, names: list[str], quiet_mode: bool, *, disable: bool) -> None:
     """Add (or subtract) every toolset in *names* to/from *tools*, printing the selection unless quiet."""
-    from toolsets import bundle_non_core_tools, get_toolset
+    from toolsets import TOOLSET_DISABLE_EXPANSIONS, bundle_non_core_tools, get_toolset
+    if disable:
+        # A disable entry may stand for a family (see TOOLSET_DISABLE_EXPANSIONS).
+        names = [expanded for name in names for expanded in TOOLSET_DISABLE_EXPANSIONS.get(name, (name,))]
     verb, icon = ("Disabled", "🚫") if disable else ("Enabled", "✅")
     for name in names:
         if validate_toolset(name):
@@ -315,11 +318,17 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     tools: set = set()
     if enabled_toolsets is not None:
         enabled = list(enabled_toolsets)
-        # Dispatcher-spawned kanban workers always get the lifecycle handoff
-        # tools, even when the assignee profile restricts its chat toolsets.
+        # A dispatcher-spawned kanban worker gets the worker surface and nothing else.
+        # Board routing / fan-out (`kanban_orchestrator`) is stripped even when the
+        # assignee profile enables it: the tools made follow-up cards self-sustaining,
+        # and fan-out is the orchestrator's decision, not the spawned run's.
         if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
-            enabled.append("kanban")
+                and _is_dispatcher_owned_worker()):
+            enabled = [name for name in enabled if name != "kanban_orchestrator"]
+            # Keep the lifecycle handoff tools even when the profile restricts its
+            # chat toolsets.
+            if "kanban" not in enabled:
+                enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
         from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets

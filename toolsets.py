@@ -1,6 +1,38 @@
-"""Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered)."""
+"""Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered).
+
+Kanban comes in two toolsets, not one. ``kanban`` is the worker surface — report and
+transition the single card the dispatcher handed you. ``kanban_orchestrator`` adds board
+routing and fan-out (``kanban_list`` / ``kanban_create`` / ``kanban_link`` /
+``kanban_unblock``) and is the only toolset that names them. The routing tools stay in
+``_HERMES_CORE_TOOLS`` so tool_search never defers them behind its bridge and the
+codex-runtime MCP surface can expose them; a session still only sees them when its
+profile opted into the kanban workflow, and a dispatcher-spawned worker never does: its
+schema selection drops the orchestrator toolset (``model_tools._select_tool_names``) and
+the four tools refuse a ``HERMES_KANBAN_TASK`` caller (``tools/kanban_tools.py``).
+"""
 
 from typing import Dict, List, Any, Set, Optional, Tuple
+
+
+# The kanban worker surface: report on / transition the card you were assigned.
+# Every dispatcher-spawned worker gets these; no board routing, no fan-out.
+_KANBAN_WORKER_TOOLS = [
+    "kanban_show", "kanban_complete", "kanban_block", "kanban_schedule",
+    "kanban_request_review", "kanban_request_changes", "kanban_heartbeat",
+    "kanban_comment", "kanban_attach", "kanban_attach_url", "kanban_attachments",
+]
+# An orchestrator's job, never a dispatched worker's: where the cards are, and how
+# to make more of them. `kanban_orchestrator` is the only toolset naming these.
+_KANBAN_ORCHESTRATOR_TOOLS = ["kanban_list", "kanban_create", "kanban_link", "kanban_unblock"]
+
+# Every toolset that opts a profile into the kanban workflow (worker or orchestrator).
+KANBAN_TOOLSET_NAMES = frozenset({"kanban", "kanban_orchestrator"})
+
+# Disabling the worker toolset means "turn the kanban workflow off". `kanban` is a
+# subset of `kanban_orchestrator`, and the routing tools reach the model through the core
+# bundle rather than through `kanban`, so subtracting `kanban` alone would leave card
+# creation enabled on a profile that just switched kanban off.
+TOOLSET_DISABLE_EXPANSIONS = {"kanban": ("kanban_orchestrator",)}
 
 
 # Shared tool list for CLI and all messaging platform toolsets (edit once, all
@@ -23,13 +55,13 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     "execute_code", "delegate_task",
     "cronjob_manage",
-    "kanban_show", "kanban_list",
-    "kanban_complete", "kanban_block", "kanban_request_review",
-    "kanban_request_changes",
-    "kanban_heartbeat",
-    "kanban_comment", "kanban_create", "kanban_link",
-    "kanban_unblock",
-    "kanban_attach", "kanban_attach_url", "kanban_attachments",
+    *_KANBAN_WORKER_TOOLS,
+    # Board routing stays in the shared bundle even though only the
+    # `kanban_orchestrator` toolset names it: tool_search never defers a core tool,
+    # and the codex-runtime MCP surface only exposes tools present here. A worker
+    # still never sees them — its schema selection drops the orchestrator toolset
+    # and the tools' check_fn refuses a HERMES_KANBAN_TASK caller.
+    *_KANBAN_ORCHESTRATOR_TOOLS,
     "computer_use",
     # Service-gated connector account status and authorization links.
     "manage_connections",
@@ -152,14 +184,23 @@ TOOLSETS = {
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
     "kanban": _ts(
-        "Kanban multi-agent coordination — only active when the agent is spawned by "
-        "the kanban dispatcher (HERMES_KANBAN_TASK env set). The dispatcher runs "
-        "inside the gateway by default; see `kanban.dispatch_in_gateway` in "
-        "config.yaml. Lets workers mark tasks done with structured handoffs, enter "
-        "first-class review (request_review — not a block), return review changes, "
-        "block for human input, heartbeat during long ops, comment on threads, attach "
-        "files, and (for orchestrators) list, unblock, and fan out tasks.",
-        [t for t in _HERMES_CORE_TOOLS if t.startswith("kanban_")],
+        "Kanban worker surface — only active when the agent is spawned by the kanban "
+        "dispatcher (HERMES_KANBAN_TASK env set) or when a profile opts in to work a "
+        "single card. Report and transition the task you were handed: mark it done "
+        "with a structured handoff, enter first-class review (request_review — not a "
+        "block), return review changes, block for human input, heartbeat during long "
+        "ops, comment on the thread, attach files. Board routing and fan-out are NOT "
+        "here — a worker reports follow-up work in its completion summary; an "
+        "orchestrator session enables `kanban_orchestrator`.",
+        _KANBAN_WORKER_TOOLS,
+    ),
+    "kanban_orchestrator": _ts(
+        "Kanban orchestrator surface — the worker toolset plus board routing and "
+        "fan-out: list the board, create child tasks, link dependencies, unblock "
+        "cards. Enable it on a profile that files and routes cards. A "
+        "dispatcher-spawned worker never sees these tools, even when its profile "
+        "enables this toolset; the dispatcher strips it from worker sessions.",
+        _KANBAN_WORKER_TOOLS + _KANBAN_ORCHESTRATOR_TOOLS,
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
     "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),

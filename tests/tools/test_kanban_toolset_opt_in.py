@@ -51,22 +51,25 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
     def toggle(enabled):
         action = "enable" if enabled else "disable"
         if surface == "http":
-            response = client.put("/api/tools/toolsets/kanban", json={"enabled": enabled})
+            response = client.put("/api/tools/toolsets/kanban_orchestrator", json={"enabled": enabled})
             assert response.status_code == 200, response.text
             assert response.json()["enabled"] is enabled
         elif surface == "rpc":
             from tui_gateway.server import _methods
 
-            response = _methods["tools.configure"]("kanban-opt-in", {"action": action, "names": ["kanban"]})
+            response = _methods["tools.configure"]("kanban-opt-in", {"action": action, "names": ["kanban_orchestrator"]})
             assert "error" not in response, response
-            assert "kanban" in response["result"]["changed"]
+            assert "kanban_orchestrator" in response["result"]["changed"]
         else:
-            _apply_toolset_change(load_config(), "cli", ["kanban"], action)
+            _apply_toolset_change(load_config(), "cli", ["kanban_orchestrator"], action)
 
     try:
         toggle(True)
         enabled_names = _names(selected())
         assert {"kanban_list", "kanban_create", "kanban_complete"} <= enabled_names
+        # The worker set alone names no board-routing tool.
+        assert "kanban_create" not in _names(["kanban"])
+        assert "kanban_complete" in _names(["kanban"])
         assert not _names(selected("telegram")), "CLI opt-in leaked to Telegram"
         assert "file" in selected()
         # A second profile in the same process must not borrow this grant or
@@ -112,7 +115,9 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     # an all/default schema. A platform grant must not become a cached global grant.
     with ThreadPoolExecutor(max_workers=2) as pool:
         named, broad = list(pool.map(_names, [["kanban"], ["hermes-cli"]]))
-    assert "kanban_create" in named
+    assert "kanban_complete" in named
+    assert "kanban_create" not in named, "the worker toolset must not carry board routing"
+    assert "kanban_create" in _names(["kanban_orchestrator"])
     assert bool(broad) is legacy
     assert bool(_names(None)) is legacy
     assert bool(_names(["all"])) is legacy
@@ -129,6 +134,10 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     worker = _names(["file"])
     assert "kanban_complete" in worker
     assert "kanban_list" not in worker
+    # A worker's selection never carries the orchestrator toolset, even when asked for.
+    orchestrator_selection = _names(["file", "kanban_orchestrator"])
+    assert "kanban_complete" in orchestrator_selection
+    assert {"kanban_list", "kanban_create", "kanban_link", "kanban_unblock"} & orchestrator_selection == set()
     with delegated_child_context():
         assert not _names(["kanban"])
     assert "kanban_complete" in _names(["file"])
