@@ -60,8 +60,10 @@
 
       # ── Container mode helpers ──────────────────────────────────────────
       # Consumer-declared packages reach the agent as a read-only directory
-      # inside the container. The derivation is null when the option is
-      # unused, which keeps the create command and the identity unchanged.
+      # inside the container: one buildEnv, mounted at
+      # /opt/hermes-extra-bin, with the executables under its bin/.
+      # The derivation is null when the option is unused, which keeps the
+      # create command and the identity unchanged.
       containerExtraBin =
         if cfg.extraPackages == [ ] then
           null
@@ -173,12 +175,8 @@
           " || true
         fi
 
-        # Put the agent venv first on PATH so python/pip resolve to writable copies
-        if [ -d "$TARGET_HOME/.venv/bin" ]; then
-          export PATH="$TARGET_HOME/.venv/bin:$PATH"
-        fi
-
-        ${containerCommand.extraBinPathGuard}
+        # PATH: venv, then consumer packages, then the image's own tools.
+        ${containerCommand.pathSetup}
         if command -v setpriv >/dev/null 2>&1; then
           exec setpriv --reuid="$HERMES_UID" --regid="$HERMES_GID" --init-groups "$@"
         elif command -v su >/dev/null 2>&1; then
