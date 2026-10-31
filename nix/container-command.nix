@@ -72,20 +72,24 @@ in
   # assertable. nixosModules.nix interpolates it immediately before the
   # privilege-drop exec.
   #
-  # The venv comes first: it is the only writable interpreter, so a store path
-  # that shadowed python or pip would break the agent's own runtime, and the
-  # mount is read-only. The extra directory still outranks the image's tools,
-  # which is what extraPackages is for. A container that was not recreated has
-  # no mount, so the guard skips the stanza.
+  # Every stanza prepends, so the LAST export in this text wins the front slot.
+  # The extra-bin prepend therefore comes first here and the venv prepend last,
+  # which makes the effective order venv > extra bin > image. The venv has to
+  # win: it is the only writable interpreter, so a store path that shadowed
+  # python or pip would break the agent's own runtime, and the mount is
+  # read-only. The extra directory still outranks the image's tools, which is
+  # what extraPackages is for. A container that was not recreated has no mount,
+  # so the guard skips the stanza.
   pathSetup = ''
-    # Put the agent venv first on PATH so python/pip resolve to writable copies
-    if [ -d "$TARGET_HOME/.venv/bin" ]; then
-      export PATH="$TARGET_HOME/.venv/bin:$PATH"
-    fi
-
-    # Consumer-declared packages next, ahead of the image's own tools.
+    # Consumer-declared packages, ahead of the image's own tools. Prepended
+    # before the venv so that the venv ends up in front of it.
     if [ -d ${containerExtraBinPath} ]; then
       export PATH="${containerExtraBinPath}:$PATH"
+    fi
+
+    # The agent venv last, so python/pip resolve to writable copies.
+    if [ -d "$TARGET_HOME/.venv/bin" ]; then
+      export PATH="$TARGET_HOME/.venv/bin:$PATH"
     fi
   '';
 }
