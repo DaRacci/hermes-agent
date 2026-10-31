@@ -159,6 +159,19 @@
         "website/docs/getting-started/nix-setup.md"
       ],
       "status": "active"
+    },
+    {
+      "slug": "hermes-agent-skill-p-lesson",
+      "branch": "patch/hermes-agent-skill-p-lesson",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 90,
+      "tests": [],
+      "files_glob": [
+        "skills/autonomous-ai-agents/hermes-agent/SKILL.md",
+        "skills/autonomous-ai-agents/hermes-agent/references/debugging-tui-commands.md"
+      ],
+      "status": "active"
     }
   ]
 }
