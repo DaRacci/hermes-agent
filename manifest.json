@@ -98,6 +98,26 @@
         "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/nix-setup.md"
       ],
       "status": "active"
+    },
+    {
+      "slug": "kanban-worker-toolset",
+      "branch": "patch/kanban-worker-toolset",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 70,
+      "tests": [
+        "tests/tools/test_kanban_toolset_split.py",
+        "tests/tools/test_kanban_toolset_opt_in.py"
+      ],
+      "files_glob": [
+        "toolsets.py",
+        "model_tools.py",
+        "tools/kanban_tools.py",
+        "tools/kanban_toolset_context.py",
+        "hermes_cli/tools_config.py",
+        "hermes_cli/doctor_tools.py"
+      ],
+      "status": "active"
     }
   ]
 }
