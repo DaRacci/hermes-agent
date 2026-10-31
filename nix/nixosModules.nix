@@ -58,16 +58,28 @@
       # (.env) stay 0640 regardless.
       configYamlMode = if cfg.addToSystemPackages then "0660" else "0640";
 
-      containerName = "hermes-agent";
-      containerDataDir = "/data"; # stateDir mount point inside container
-      containerHomeDir = "/home/hermes";
-
       # ── Container mode helpers ──────────────────────────────────────────
-      containerBin =
-        if cfg.container.backend == "docker" then
-          "${pkgs.docker}/bin/docker"
+      # Consumer-declared packages reach the agent as a read-only directory
+      # inside the container. The derivation is null when the option is
+      # unused, which keeps the create command and the identity unchanged.
+      containerExtraBin =
+        if cfg.extraPackages == [ ] then
+          null
         else
-          "${pkgs.podman}/bin/podman";
+          pkgs.buildEnv {
+            name = "hermes-container-extra-bin";
+            paths = cfg.extraPackages;
+            pathsToLink = [ "/bin" ];
+          };
+
+      containerCommand = import ./container-command.nix {
+        inherit lib pkgs cfg containerExtraBin;
+      };
+
+      containerName = containerCommand.containerName;
+      containerDataDir = containerCommand.containerDataDir; # stateDir mount point inside container
+      containerHomeDir = containerCommand.containerHomeDir;
+      containerBin = containerCommand.containerBin;
 
       # Runs as root inside the container on every start. Provisions the
       # hermes user + sudo on first boot (writable layer persists), then
@@ -166,6 +178,7 @@
           export PATH="$TARGET_HOME/.venv/bin:$PATH"
         fi
 
+        ${containerCommand.extraBinPathGuard}
         if command -v setpriv >/dev/null 2>&1; then
           exec setpriv --reuid="$HERMES_UID" --regid="$HERMES_GID" --init-groups "$@"
         elif command -v su >/dev/null 2>&1; then
@@ -180,12 +193,19 @@
       # Package and entrypoint use stable symlinks (current-package, current-entrypoint)
       # so they can update without recreation. Env vars go through $HERMES_HOME/.env.
       containerIdentity = builtins.hashString "sha256" (
-        builtins.toJSON {
-          schema = 4; # bump when identity inputs change (4: Node 18→22 via NodeSource)
-          image = cfg.container.image;
-          extraVolumes = cfg.container.extraVolumes;
-          extraOptions = cfg.container.extraOptions;
-        }
+        builtins.toJSON (
+          {
+            schema = 4; # bump when identity inputs change (4: Node 18→22 via NodeSource)
+            image = cfg.container.image;
+            extraVolumes = cfg.container.extraVolumes;
+            extraOptions = cfg.container.extraOptions;
+          }
+          # Only users of extraPackages get the field, so their container is
+          # recreated once for the mount and nobody else's is.
+          // lib.optionalAttrs (containerExtraBin != null) {
+            containerExtraBin = "${containerExtraBin}";
+          }
+        )
       );
 
       identityFile = "${cfg.stateDir}/.container-identity";
@@ -673,22 +693,7 @@
                   HERMES_GID=$(${pkgs.coreutils}/bin/id -g ${cfg.user})
 
                   echo "Creating container..."
-                  ${containerBin} create \
-                    --name ${containerName} \
-                    --network=host \
-                    --entrypoint ${containerDataDir}/current-entrypoint \
-                    --volume /nix/store:/nix/store:ro \
-                    --volume ${cfg.stateDir}:${containerDataDir} \
-                    --volume ${cfg.stateDir}/home:${containerHomeDir} \
-                    ${lib.concatStringsSep " " (map (v: "--volume ${v}") cfg.container.extraVolumes)} \
-                    --env HERMES_UID="$HERMES_UID" \
-                    --env HERMES_GID="$HERMES_GID" \
-                    --env HERMES_HOME=${containerDataDir}/.hermes \
-                    --env HERMES_MANAGED=true \
-                    --env HOME=${containerHomeDir} \
-                    ${lib.concatStringsSep " " cfg.container.extraOptions} \
-                    ${cfg.container.image} \
-                    ${containerDataDir}/current-package/bin/hermes gateway run --replace ${lib.concatStringsSep " " cfg.extraArgs}
+                  ${containerCommand.create}
 
                   echo "${containerIdentity}" > ${identityFile}
                 fi
