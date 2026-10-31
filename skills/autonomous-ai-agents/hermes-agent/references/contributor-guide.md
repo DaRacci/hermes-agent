@@ -120,6 +120,12 @@ invariant for prompt authors: with a **remote** terminal backend
 suppressed and *every* file tool runs inside the backend container — the
 prompt must never describe the host the agent can't touch.
 
+The backend facts behind that block (`uname` / `whoami` / `pwd`) are probed
+through `tools.environments.get_environment(...).execute(...)`, cached per
+process in `_BACKEND_PROBE_CACHE` and rendered from a static fallback when the
+probe times out — so a slow or unreachable backend degrades the prompt, it
+never stalls or fails the turn.
+
 ### Commit Conventions
 
 ```
