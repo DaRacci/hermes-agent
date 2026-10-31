@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+
 ROUTING_TOOLS = frozenset({"kanban_list", "kanban_create", "kanban_link", "kanban_unblock"})
 WORKER_TOOLS = frozenset({
     "kanban_show", "kanban_complete", "kanban_block", "kanban_schedule",
@@ -52,7 +54,12 @@ def task_id(home):
 
 @pytest.fixture
 def worker(task_id, monkeypatch):
-    """A dispatcher-spawned worker: task, run and claim pinned in the env."""
+    """A dispatcher-spawned worker: task, run and claim pinned in the env.
+
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` must be absent: an inherited marker flips
+    ``is_dispatcher_owned_worker_context()`` to False, the routing tools' check_fn then
+    falls through to the profile opt-in, and the schema looks leaky when it is not.
+    """
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
 
@@ -62,6 +69,7 @@ def worker(task_id, monkeypatch):
         run_id = task.current_run_id
     monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.delenv(DELEGATED_CHILD_ENV_MARKER, raising=False)
     return task_id
 
 
@@ -104,6 +112,17 @@ def test_toolsets_split_board_routing_from_the_worker_surface():
 
 def test_worker_schema_carries_reporting_tools_but_no_board_routing(worker):
     names = _kanban_schema_names(["file", "kanban_orchestrator"])
+
+    assert WORKER_TOOLS <= names, "the worker's reporting path must be unchanged"
+    assert ROUTING_TOOLS.isdisjoint(names), f"worker schema leaked {ROUTING_TOOLS & names}"
+
+
+def test_worker_schema_strips_routing_tools_the_core_bundle_names(worker):
+    """A dispatched worker runs the assignee's real cli selection: the core bundle plus
+    `kanban_orchestrator` (`_resolve_worker_cli_toolsets`). There the four routing names
+    arrive through `hermes-cli`, so only the check_fn removes them — the name-strip above
+    never fires. Pin that half too."""
+    names = _kanban_schema_names(["hermes-cli", "kanban_orchestrator"])
 
     assert WORKER_TOOLS <= names, "the worker's reporting path must be unchanged"
     assert ROUTING_TOOLS.isdisjoint(names), f"worker schema leaked {ROUTING_TOOLS & names}"

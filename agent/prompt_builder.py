@@ -260,7 +260,12 @@ SESSION_SEARCH_GUIDANCE = (
 # (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
 SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
-KANBAN_GUIDANCE = (
+# The kanban protocol has two halves, and a session's schema decides which it gets. A
+# dispatcher-spawned worker holds the reporting tools only, so telling it to fan out buys a failed
+# `kanban_create` call — and the model's next move is `hermes kanban create` in the shell, which is
+# the self-sustaining card chain the worker/orchestrator toolset split exists to stop.
+# ``build_kanban_guidance`` appends the orchestration half only where ``kanban_create`` is callable.
+_KANBAN_LIFECYCLE_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "
     "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. The `kanban_*` tools in your schema are your "
@@ -293,24 +298,15 @@ KANBAN_GUIDANCE = (
     "`kanban_complete`, returns actionable rework with `kanban_request_changes`, or uses `kanban_block` only for a "
     "genuine external escalation. Review is not a block, so repeated review cycles do not trip unblock-loop "
     "detection.\n"
-    "6. **If follow-up work appears, create it; don't do it.** Use `kanban_create(title=..., assignee=<right-profile>, "
-    "parents=[your-task-id])` to spawn a child task for the appropriate specialist profile instead of scope-creeping "
-    "into the next thing.\n"
+    "6. **Don't do work that belongs to another card.** If you find work outside this card's scope (a bug in another "
+    "subsystem, a doc gap, a further refactor), do not start it and do not scope-creep into it — hand it off instead. "
+    "A session with no routing tools describes it in `kanban_complete`'s summary or metadata and lets a routing "
+    "session decide whether it becomes a card (see *Orchestrator mode* when your schema holds the routing tools). "
+    "Never reach for `hermes kanban create` in a shell.\n"
     "7. **Flag collision hotspots; don't pile on.** If your change keeps colliding with sibling branches in one file, "
     "or a file your diff touches shows up in other cards' recent comments, do not silently add more to it: leave a "
     "`kanban_comment` starting with `hotspot: <path> — <one-line reason>` on your card and repeat the flag in your "
     "completion metadata, so the orchestrator can decompose that file before more work lands on it.\n"
-    "\n"
-    "## Orchestrator mode\n\n"
-    "If your task is itself a decomposition task (e.g. a planner profile given a high-level goal), use `kanban_create` "
-    "to fan out into child tasks — one per specialist, each with an explicit `assignee` and `parents=[...]` to express "
-    "dependencies. Then `kanban_complete` your own task with a summary of the decomposition. Do NOT execute the work "
-    "yourself; your job is routing, not implementation.\n"
-    "\n"
-    "**Decision ownership.** Design decisions belong to you, the orchestrator, not to workers — settle naming schemes, "
-    "schemas, file formats, and API shapes before fanning out. Never let two subtree cards decide the same question: "
-    "if two tasks would each pick one, decide it yourself and write the decision into BOTH card bodies. Every child "
-    "card body must carry the decisions it depends on, because workers cannot see sibling context.\n"
     "\n"
     "## Reference details that change outcomes\n\n"
     "- **Workspace.** `cd $HERMES_KANBAN_WORKSPACE` first. For a `worktree` kind with no `.git`, `git worktree add "
@@ -322,12 +318,36 @@ KANBAN_GUIDANCE = (
     "- **Attachments.** Attach real downloadable artifacts instead of pasting links in comments: `kanban_attach` "
     "(base64) or `kanban_attach_url` (server-side public http(s) fetch); 25 MB cap, `kanban_attachments` lists them. "
     "Workers may only attach to their own task.\n"
-    "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` ONLY when captured from a successful "
+    "\n"
+)
+
+# Orchestration half: only for a session whose schema holds the board-routing tools (an orchestrator
+# profile working a decomposition card). Never appended for a dispatched worker.
+_KANBAN_ORCHESTRATOR_GUIDANCE = (
+    "## Orchestrator mode\n\n"
+    "Your schema holds the board-routing tools (`kanban_create`, `kanban_link`, `kanban_list`, `kanban_unblock`); a "
+    "dispatched worker never does. If your task is itself a decomposition task (e.g. a planner profile given a "
+    "high-level goal), use `kanban_create` to fan out into child tasks — one per specialist, each with an explicit "
+    "`assignee` and `parents=[...]` to express dependencies. Then `kanban_complete` your own task with a summary of "
+    "the decomposition. Do NOT execute the work yourself; your job is routing, not implementation.\n"
+    "\n"
+    "**Decision ownership.** Design decisions belong to you, the orchestrator, not to workers — settle naming schemes, "
+    "schemas, file formats, and API shapes before fanning out. Never let two subtree cards decide the same question: "
+    "if two tasks would each pick one, decide it yourself and write the decision into BOTH card bodies. Every child "
+    "card body must carry the decisions it depends on, because workers cannot see sibling context.\n"
+    "\n"
+    "**Created cards.** List ids in `kanban_complete(created_cards=[...])` ONLY when captured from a successful "
     "`kanban_create` return — never invent or paste ids; the kernel rejects the completion on any phantom id.\n"
-    "- **Orchestrating: discover profiles first.** The dispatcher SILENTLY drops a card with an unknown assignee (it "
+    "\n"
+    "**Orchestrating: discover profiles first.** The dispatcher SILENTLY drops a card with an unknown assignee (it "
     "sits in `ready` forever). Ground every assignee in a real profile (`hermes profile list`, or ask the user), and "
     "express dependencies via `parents=[...]` on `kanban_create`, not prose.\n"
     "\n"
+    "**Follow-up assignment.** Do not assign follow-up work to yourself. Assign it to the right specialist profile.\n"
+    "\n"
+)
+
+_KANBAN_DO_NOT_GUIDANCE = (
     "## Do NOT\n\n"
     "- Do not shell out to `hermes kanban <verb>` for board operations. Use the `kanban_*` tools — they work across "
     "all terminal backends.\n"
@@ -336,10 +356,24 @@ KANBAN_GUIDANCE = (
     "will time out and the task will sit silently in `running` with no signal to the operator. Instead: "
     "`kanban_comment` the context, then `kanban_block(reason=...)` so the task surfaces on the board as needing "
     "input.\n"
-    "- Do not assign follow-up work to yourself. Assign it to the right specialist profile.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is for short reasoning subtasks inside your "
     "own run; board tasks are for cross-agent handoffs that outlive one API loop."
 )
+
+KANBAN_GUIDANCE = _KANBAN_LIFECYCLE_GUIDANCE + _KANBAN_DO_NOT_GUIDANCE
+
+
+def build_kanban_guidance(valid_tool_names=()) -> str:
+    """The kanban protocol for a dispatcher-owned card session.
+
+    Sanding the orchestration half into a worker's prompt costs a failed ``kanban_create`` call on the
+    exact path that once produced a five-card chain; board routing is a capability the schema either
+    carries or does not, so the block is appended only when the tool is really callable.
+    """
+    if "kanban_create" in valid_tool_names:
+        return _KANBAN_LIFECYCLE_GUIDANCE + _KANBAN_ORCHESTRATOR_GUIDANCE + _KANBAN_DO_NOT_GUIDANCE
+    return KANBAN_GUIDANCE
+
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"

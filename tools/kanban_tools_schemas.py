@@ -93,9 +93,9 @@ KANBAN_COMPLETE_SCHEMA = _schema(
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required. If you created new "
-        "tasks via ``kanban_create`` during this run, list their ids "
-        "in ``created_cards`` — the kernel verifies them so phantom "
+        "``summary`` or ``result`` is required. Orchestrator sessions that "
+        "created new tasks via ``kanban_create`` during this run list their "
+        "ids in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "
         "automation. If you produced deliverable files (charts, PDFs, "
         "spreadsheets, generated images), list their absolute paths "
@@ -127,8 +127,10 @@ KANBAN_COMPLETE_SCHEMA = _schema(
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "Optional structured manifest of task ids you "
-                "created via ``kanban_create`` during this run. "
+                "Optional structured manifest of task ids created "
+                "via ``kanban_create`` in this run — orchestrator "
+                "sessions only, since a dispatched worker cannot "
+                "call it. "
                 "The kernel verifies each id exists and was "
                 "created by this worker's profile; any phantom "
                 "id blocks the completion with an error listing "
