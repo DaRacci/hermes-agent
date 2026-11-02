@@ -745,6 +745,7 @@ When container mode is enabled, hermes runs inside a persistent Ubuntu container
 Host                                    Container
 ────                                    ─────────
 /nix/store/...-hermes-agent-0.1.0  ──►  /nix/store/... (ro)
+/nix/store/...-extra-bin           ──►  /opt/hermes-extra-bin (ro, extraPackages)
 ~/.hermes -> /var/lib/hermes/.hermes       (symlink bridge, per hostUsers)
 /var/lib/hermes/                    ──►  /data/          (rw)
   ├── current-package -> /nix/store/...    (symlink, updated each rebuild)
@@ -767,6 +768,29 @@ Container writable layer (apt/pip/npm):   /usr, /usr/local, /tmp
 
 The Nix-built binary works inside the Ubuntu container because `/nix/store` is bind-mounted — it brings its own interpreter and all dependencies, so there's no reliance on the container's system libraries. The container entrypoint resolves through a `current-package` symlink: `/data/current-package/bin/hermes gateway run --replace`. On `nixos-rebuild switch`, only the symlink is updated — the container keeps running.
 
+### extraPackages in Container Mode
+
+`extraPackages` puts packages on the agent's `PATH` in every deployment mode. Container mode links the packages' binaries into one directory, mounts it read-only at `/opt/hermes-extra-bin`, and puts `/opt/hermes-extra-bin/bin` on the agent's `PATH`:
+
+```nix
+services.hermes-agent = {
+  container.enable = true;
+  extraPackages = [ pkgs.ast-grep pkgs.openspec ];
+};
+```
+
+The container's `PATH` resolves in this order:
+
+1. `$HOME/.venv/bin` — the agent's writable Python, where `pip install` lands
+2. `/opt/hermes-extra-bin/bin` — the packages above
+3. the image's own directories (`/usr/local/bin`, `/usr/bin`, ...)
+
+The venv comes first because it is the only writable interpreter: a store path that shadowed `python` or `pip` would break the agent's own runtime, and the mount is read-only. The extra directory still outranks the image's tools, which is the point of the option.
+
+The packages are linked into one `buildEnv`, so two packages that ship the same file name with different contents fail the rebuild instead of one silently shadowing the other. (Identical contents are merged, which is what `buildEnv` does by default.)
+
+Setting `extraPackages` recreates the container once, because `docker create` is the only place that can add the mount. Configurations that leave the option empty are not recreated.
+
 ### What Persists Across What
 
 | Event | Container recreated? | `/data` (state) | `/home/hermes` | Writable layer (`apt`/`pip`/`npm`) |
@@ -779,7 +803,7 @@ The Nix-built binary works inside the Ubuntu container because `/nix/store` is b
 | Volume/options change | **Yes** | Persists | Persists | **Lost** |
 | `environment`/`environmentFiles` change | No | Persists | Persists | Persists |
 
-The container is only recreated when its **identity hash** changes. The hash covers: schema version, image, `extraVolumes`, `extraOptions`, and the entrypoint script. Changes to environment variables, settings, documents, or the hermes package itself do **not** trigger recreation.
+The container is only recreated when its **identity hash** changes. The hash covers: schema version, image, `extraVolumes`, `extraOptions`, and — only when `extraPackages` is set — the package snapshot mounted at `/opt/hermes-extra-bin`. Changes to environment variables, settings, documents, or the hermes package itself do **not** trigger recreation.
 
 :::warning Writable layer loss
 When the identity hash changes (image upgrade, new volumes, new container options), the container is destroyed and recreated from a fresh pull of `container.image`. Any `apt install`, `pip install`, or `npm install` packages in the writable layer are lost. State in `/data` and `/home/hermes` is preserved (these are bind mounts).
@@ -1102,7 +1126,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
-| `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
+| `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them. Container mode also mounts them read-only at `/opt/hermes-extra-bin` and puts `/opt/hermes-extra-bin/bin` on `PATH` |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Use the selected package’s `python.pkgs` |
 | `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras added to the groups `package` already ships (e.g. `["google-meet"]`). Resolved by uv — no collisions |
@@ -1320,4 +1344,4 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | `nix-collect-garbage` removed hermes | GC root missing | Restart the service (preStart recreates the GC root) |
 | `no container with name or ID "hermes-agent"` (Podman) | Podman rootful container not visible to regular user | Add passwordless sudo for podman (see [Container Mode](#container-mode) section) |
 | `unable to find user hermes` | Container still starting (entrypoint hasn't created user yet) | Wait a few seconds and retry — the CLI retries automatically |
-| Tool added via `extraPackages` not found in terminal | Requires `nixos-rebuild switch` to update the per-user profile | Rebuild and restart: `nixos-rebuild switch && systemctl restart hermes-agent` |
+| Tool added via `extraPackages` not found in terminal | `nixos-rebuild switch` updates the per-user profile, and container mode needs a container recreation to add the mount | Rebuild and restart: `nixos-rebuild switch && systemctl restart hermes-agent` |
