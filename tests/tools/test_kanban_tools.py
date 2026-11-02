@@ -71,6 +71,19 @@ def worker_env(monkeypatch, tmp_path):
     return tid
 
 
+@pytest.fixture
+def orchestrator_env(worker_env, monkeypatch):
+    """The same board, viewed from an orchestrator session: no dispatcher task in env.
+
+    `kanban_create` / `kanban_link` are orchestrator-only, so the tests that exercise
+    them need a session the routing gate accepts. The running task `worker_env` created
+    stays on the board and serves as the parent for gated children.
+    """
+    for var in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK"):
+        monkeypatch.delenv(var, raising=False)
+    return worker_env
+
+
 def test_show_defaults_to_env_task_id(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_show({})
@@ -719,18 +732,18 @@ def test_comment_rejects_caller_supplied_author(worker_env):
         conn.close()
 
 
-def test_create_happy_path(worker_env):
+def test_create_happy_path(orchestrator_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "child task",
         "assignee": "peer",
-        "parents": [worker_env],
+        "parents": [orchestrator_env],
     })
     d = json.loads(out)
     assert d["ok"] is True
     assert d["task_id"]
     assert d["status"] == "todo"  # parent isn't done yet
-    assert d["gated"] is True and d["gated_by"] == worker_env
+    assert d["gated"] is True and d["gated_by"] == orchestrator_env
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
@@ -745,7 +758,7 @@ def test_create_happy_path(worker_env):
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
 @pytest.mark.parametrize("target_scoped", [False, True])
 def test_create_explicit_scratch_ignores_ambient_board_project(
-    worker_env, tmp_path, explicit, target_scoped,
+    orchestrator_env, tmp_path, explicit, target_scoped,
 ):
     """#106342: an explicit scratch / empty project wins over the project the
     session's current board (and, when scoped, the target board itself) carries.
@@ -771,29 +784,27 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
     assert create() == (("worktree", project_id) if target_scoped else ("scratch", None))
 
 
-def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker_env):
+def test_link_is_orchestrator_only_and_gates_a_running_child(orchestrator_env):
+    """Routing tool: an orchestrator links a not-yet-running child, and a child that
+    is already claimed is refused (an edge after the claim cannot serialise the run)."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
     with kbc.connect() as conn:
-        own_parent = kb.create_task(conn, title="own review")
-        own_run_id = kb.get_task(conn, worker_env).current_run_id
-        foreign_parent = kb.create_task(conn, title="foreign review")
-        foreign_child = kb.create_task(conn, title="foreign worker")
-        assert kb.claim_task(conn, foreign_child, claimer="other") is not None
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        running = kb.create_task(conn, title="running child")
+        assert kb.claim_task(conn, running, claimer="other") is not None
 
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(own_run_id))
-    own = json.loads(kt._handle_link({"parent_id": own_parent, "child_id": worker_env}))
-    foreign = json.loads(kt._handle_link(
-        {"parent_id": foreign_parent, "child_id": foreign_child},
-    ))
+    ok = json.loads(kt._handle_link({"parent_id": parent, "child_id": child}))
+    running_out = json.loads(kt._handle_link({"parent_id": parent, "child_id": running}))
 
-    assert own["ok"] is True
-    assert "child is already running" in foreign["error"]
+    assert ok["ok"] is True
+    assert "child is already running" in running_out["error"]
     with kbc.connect() as conn:
-        assert kb.parent_ids(conn, worker_env) == [own_parent]
-        assert kb.parent_ids(conn, foreign_child) == []
+        assert kb.parent_ids(conn, child) == [parent]
+        assert kb.parent_ids(conn, running) == []
 
 
 def test_unblock_happy_path(monkeypatch, worker_env):
@@ -874,18 +885,17 @@ def test_worker_lifecycle_through_tools(worker_env):
         "body": "note: using stdlib sqlite3 bindings",
     }))["ok"]
 
-    # 4. spawn a child task for follow-up
-    child_out = json.loads(kt._handle_create({
+    # 4. fan-out is not a worker capability: the routing tool refuses, and the
+    #    follow-up rides the completion summary instead of a new card.
+    assert json.loads(kt._handle_create({
         "title": "write integration test",
         "assignee": "qa",
-        "parents": [worker_env],
-    }))
-    assert child_out["ok"]
+    }))["error"].startswith("kanban_create is orchestrator-only")
 
     # 5. complete with structured handoff
     comp = json.loads(kt._handle_complete({
-        "summary": "implemented + spawned QA follow-up",
-        "metadata": {"child_task": child_out["task_id"]},
+        "summary": "implemented; QA follow-up belongs in a new card an orchestrator files",
+        "metadata": {"follow_up": "write integration test"},
     }))
     assert comp["ok"]
 
@@ -899,13 +909,9 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
-        # Child is todo (parent just finished, but recompute_ready may
-        # have promoted it — complete_task runs recompute internally).
-        child = kb.get_task(conn, child_out["task_id"])
-        assert child.status == "ready", (
-            f"child should be ready after parent done, got {child.status}"
-        )
+        assert run.metadata == {"follow_up": "write integration test"}
+        # No card was filed by the worker: fan-out is the orchestrator's job.
+        assert kb.list_tasks(conn, assignee="qa") == []
         # Comment is visible
         assert len(kb.list_comments(conn, worker_env)) == 1
         # Heartbeat event recorded
@@ -928,9 +934,9 @@ def test_worker_lifecycle_through_tools(worker_env):
 # destructive tools (kanban_complete, kanban_block, kanban_heartbeat,
 # kanban_unblock) must refuse to operate
 # on any OTHER task id, even if the caller supplies an explicit `task_id`
-# argument. Workers legitimately call kanban_show / kanban_list /
-# kanban_comment / kanban_create / kanban_link on other tasks, so those
-# are unrestricted.
+# argument. Workers legitimately call kanban_show / kanban_comment on other
+# tasks, so those are unrestricted. kanban_list / kanban_create / kanban_link /
+# kanban_unblock are orchestrator-only and refuse a worker outright.
 #
 # Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child
@@ -1104,7 +1110,7 @@ def _sub_index(subs):
     return out
 
 
-def test_create_subscribes_gateway_session(monkeypatch, worker_env):
+def test_create_subscribes_gateway_session(monkeypatch, orchestrator_env):
     """A gateway session (platform + chat_id set) gets auto-subscribed
     to its own kanban_create result, and the response surfaces the
     ``subscribed`` flag so the orchestrator can react."""
@@ -1137,7 +1143,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["delivery_mode"] == "notify+wake"
 
 
-def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
+def test_create_subscribes_tui_session_via_session_key(monkeypatch, orchestrator_env):
     """TUI / desktop sessions don't have a platform/chat_id (single
     local channel), but the parent process exports HERMES_SESSION_KEY.
     We should still auto-subscribe, with platform='tui' and
@@ -1167,7 +1173,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert subs[0]["delivery_mode"] == "notify"
 
 
-def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
+def test_create_does_not_subscribe_in_cli_session(monkeypatch, orchestrator_env):
     """CLI / cron / test sessions have no persistent delivery channel.
     _maybe_auto_subscribe returns False and no row is written."""
     from tools import kanban_tools as kt
@@ -1187,7 +1193,7 @@ def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
     assert _list_subs_for_task(d["task_id"]) == []
 
 
-def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(monkeypatch, worker_env, tmp_path):
+def test_create_tui_subscription_binds_to_live_session_after_compaction_fork(monkeypatch, orchestrator_env, tmp_path):
     """#110068: the inherited HERMES_SESSION_KEY can name a session already superseded
     by a compaction fork. Auto-subscribe must bind to the live continuation tip resolved
     from the session store, not the stale key the process was launched with."""
@@ -1264,14 +1270,14 @@ def test_live_tui_session_key_fails_open_to_original_key(monkeypatch):
     assert kt._live_tui_session_key("stale-key", "ghost-profile") == "stale-key"
 
 
-def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env, tmp_path):
+def test_create_respects_auto_subscribe_on_create_false(monkeypatch, orchestrator_env, tmp_path):
     """The config gate kanban.auto_subscribe_on_create=false must
     suppress auto-subscription even when the session has a delivery
     channel. This is the knob that addresses the upstream design
     concern from PR #19718 (reverted in #19721) — users who want
     explicit kanban_notify-subscribe calls per task get that."""
-    # worker_env already created <tmp>/.hermes; use a fresh sibling
-    # home to avoid mkdir() colliding with the worker's directory.
+    # orchestrator_env already created <tmp>/.hermes; use a fresh sibling
+    # home to avoid mkdir() colliding with that board's directory.
     home = tmp_path / "gate-home" / ".hermes"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text(
@@ -1293,7 +1299,7 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     assert _list_subs_for_task(d["task_id"]) == []
 
 
-def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
+def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, orchestrator_env):
     """If add_notify_sub itself raises (e.g. DB locked, schema drift),
     _maybe_auto_subscribe must NOT bubble that up and fail the parent
     kanban_create. The function returns False and the parent create

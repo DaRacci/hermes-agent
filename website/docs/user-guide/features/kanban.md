@@ -30,7 +30,7 @@ checkpoint; their iteration warning remains opt-in.
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
-- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_attach`, `kanban_attach_url`, `kanban_attachments`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
+- **Agents drive the board through two dedicated toolsets.** The **worker** toolset (`kanban`) is `kanban_show`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_schedule`, `kanban_heartbeat`, `kanban_comment`, `kanban_attach`, `kanban_attach_url`, `kanban_attachments` — report on and transition the one card you were handed. The **orchestrator** toolset (`kanban_orchestrator`) adds `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with the worker toolset already in its schema; a profile that files and routes cards enables `kanban_orchestrator` explicitly. A dispatched worker never receives the orchestrator toolset, so it cannot spawn more cards — it reports follow-up work in its completion summary. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
@@ -112,7 +112,7 @@ They look similar; they are not the same primitive.
 **One-sentence distinction:** `delegate_task` is a function call; Kanban is a work queue where every handoff is a row any profile (or human) can see and edit.
 
 :::caution Don't link a support card to the card it is meant to unblock
-A worker that is blocked on `t_parent` and creates a support card for the missing piece must **not** `kanban_link(t_parent, t_support)`: the link makes the support card a *child* of the blocked parent, so it is gated behind the parent it exists to unblock and neither card ever runs. Reference the parent id in the support card's body instead. `link`/`kanban_link` report `gated: true` and record a `dependency_wait` event when they demote a `ready` child (and `kanban_create` with `parents` does the same when it parks the new card), so the deadlock is visible on the board; `hermes kanban unlink <parent> <child>` releases it.
+An orchestrator routing around a card blocked on `t_parent` and creating a support card for the missing piece must **not** `kanban_link(t_parent, t_support)`: the link makes the support card a *child* of the blocked parent, so it is gated behind the parent it exists to unblock and neither card ever runs. Reference the parent id in the support card's body instead. `link`/`kanban_link` report `gated: true` and record a `dependency_wait` event when they demote a `ready` child (and `kanban_create` with `parents` does the same when it parks the new card), so the deadlock is visible on the board; `hermes kanban unlink <parent> <child>` releases it. A dispatched worker cannot create or link anything at all — it reports the missing piece in its completion summary and the orchestrator decides.
 :::
 
 **Use `delegate_task` when** the parent agent needs a short reasoning answer before continuing, no humans involved, result goes back into the parent's context.
@@ -434,13 +434,18 @@ parent, missing input, unmet capability) before unblocking, or raise
 ## Enabling tools for a chat profile
 
 The Desktop Kanban plugin displays the board; it does not grant the chat agent
-permission to manage tasks. Enable the `kanban` toolset for the profile and
-platform that should orchestrate work:
+permission to manage tasks. Enable the `kanban_orchestrator` toolset for the
+profile and platform that should file and route work:
 
 ```bash
-hermes -p planner tools enable kanban                      # CLI / TUI / Desktop chats
-hermes -p planner tools enable kanban --platform telegram  # a gateway platform
+hermes -p planner tools enable kanban_orchestrator                      # CLI / TUI / Desktop chats
+hermes -p planner tools enable kanban_orchestrator --platform telegram  # a gateway platform
 ```
+
+`kanban_orchestrator` is the worker toolset plus board routing. A profile that
+only works cards it is handed (a reviewer, a docs writer) enables `kanban`
+instead — that gives the reporting tools and nothing that can create, link, list,
+or unblock cards.
 
 Each platform has its own selection under `platform_toolsets.<platform>` in
 `config.yaml`; the toolset is also a checkbox in `hermes tools` and the dashboard.
@@ -451,17 +456,19 @@ prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
 `toolsets: [kanban]` is honoured as a fallback only when no platform selection was
 saved; `all` alone is not a Kanban opt-in.
 
-Dispatcher-owned workers receive their task lifecycle tools automatically.
-`delegate_task` children do not gain permission to mutate the board.
+Dispatcher-owned workers receive their task lifecycle tools automatically, and the
+dispatcher strips `kanban_orchestrator` from their selection even when the assignee
+profile enables it. `delegate_task` children do not gain permission to mutate the
+board.
 
 ## How workers interact with the board
 
-**Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
+**Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on the worker **`kanban` toolset** in the model's schema. Orchestrator profiles enable `kanban_orchestrator`, which is that worker set plus board routing and fan-out (`kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`). A dispatched worker gets the worker set alone — the dispatcher strips the orchestrator toolset from its selection, and the routing tools refuse a `HERMES_KANBAN_TASK` caller — so the "report a follow-up" path is a completion-summary line, not a new card. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
 
 | Tool | Purpose | Required params |
 |---|---|---|
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
-| `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
+| `kanban_list` | (Orchestrators only — `kanban_orchestrator`) List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_request_review` | Start same-card review with a durable `summary`, optional `metadata`, and optional reviewer profile. The task moves to `review`; this is not a block. | `summary` |
 | `kanban_request_changes` | Reviewer verdict from an active review run. Closes that run, reapplies parent gating, and routes the task to its original implementer without block-loop accounting. | `reason` |
@@ -471,9 +478,9 @@ Dispatcher-owned workers receive their task lifecycle tools automatically.
 | `kanban_attach` | Attach a file to a task by passing its bytes inline (base64); stored under the task's attachments dir (25 MB cap). | file bytes + name |
 | `kanban_attach_url` | Attach a file to a task by URL. | `url` |
 | `kanban_attachments` | List a task's attachments. | — |
-| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
-| `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. Returns `gated: true` when the child was `ready` and got demoted back to `todo` because the parent is not done — the child will only run after the parent completes. Refused with `child is already running` when the child is already claimed — an edge added after the claim cannot serialise the run (a worker may still link its *own* running card ahead of a `kind=dependency` block). | `parent_id`, `child_id` |
-| `kanban_unblock` | (Orchestrators) restore a blocked task to its source phase (`review` or `ready`), or `todo` while a parent remains open. | `task_id` |
+| `kanban_create` | (Orchestrators only) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. Returns `gated: true` + `gated_by` when an open parent parked the new card in `todo`. | `title`, `assignee` |
+| `kanban_link` | (Orchestrators only) add a `parent_id → child_id` dependency edge after the fact. Returns `gated: true` when the child was `ready` and got demoted back to `todo` because the parent is not done — the child will only run after the parent completes. Refused with `child is already running` when the child is already claimed — an edge added after the claim cannot serialise the run. A worker expresses its own wait with `kanban_block(kind="dependency")` instead. | `parent_id`, `child_id` |
+| `kanban_unblock` | (Orchestrators only) restore a blocked task to its source phase (`review` or `ready`), or `todo` while a parent remains open. | `task_id` |
 
 A typical worker turn looks like:
 
@@ -510,7 +517,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
+The orchestrator-only tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock` — live in the `kanban_orchestrator` toolset; a dispatched worker never has them, so its only handoff for out-of-scope work is a completion-summary line. `kanban_comment` stays a worker tool but is scoped to the worker's own card, and orchestrator profiles don't execute implementation work.
 
 ### Why tools instead of shelling to `hermes kanban`
 
@@ -520,7 +527,7 @@ Three reasons:
 2. **No shell-quoting fragility.** Passing `--metadata '{"files": [...]}'` through shlex + argparse is a latent footgun. Structured tool args skip it entirely.
 3. **Better errors.** Tool results are structured JSON the model can reason about, not stderr strings it has to parse.
 
-**Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools in its schema unless the active profile explicitly enables the `kanban` toolset for orchestrator work. Dispatcher-spawned task workers get task-scoped tools because `HERMES_KANBAN_TASK` is set; orchestrator profiles get the broader routing surface through config. No tool bloat for users who never touch kanban.
+**Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools in its schema unless the active profile explicitly enables a kanban toolset. Dispatcher-spawned task workers get the worker tools because `HERMES_KANBAN_TASK` is set; orchestrator profiles get the broader routing surface by enabling `kanban_orchestrator`. No tool bloat for users who never touch kanban.
 
 The auto-injected kanban guidance teaches the model which tool to call when and in what order. It is injected only for the dispatcher-spawned worker that owns the task: an interactive session that merely has the `kanban` toolset enabled keeps the tools but is not told it "has been assigned ONE task", and a `delegate_task` child or a cron run fired from inside a worker — which inherit the worker's `HERMES_KANBAN_TASK` — neither receives the worker protocol nor records a terminal outcome against the worker's card when its own turn budget runs out.
 
@@ -737,7 +744,7 @@ A goal-mode worker's **Worker log** (dashboard drawer, `hermes kanban log <id>`)
 
 ### How the orchestrator behaves
 
-A **well-behaved orchestrator does not do the work itself.** It decomposes the user's goal into tasks, links them, assigns each to one of the profiles you've set up, and steps back. The orchestrator guidance — anti-temptation rules, a Step-0 profile-discovery prompt (the dispatcher silently fails on unknown assignee names, so the orchestrator must ground every card in profiles that actually exist on your machine), and a decomposition playbook keyed on `kanban_create` / `kanban_link` / `kanban_comment` — is injected into the worker's system prompt automatically; there is nothing to install.
+A **well-behaved orchestrator does not do the work itself.** It decomposes the user's goal into tasks, links them, assigns each to one of the profiles you've set up, and steps back. The orchestrator guidance — anti-temptation rules, a Step-0 profile-discovery prompt (the dispatcher silently fails on unknown assignee names, so the orchestrator must ground every card in profiles that actually exist on your machine), and a decomposition playbook keyed on `kanban_create` / `kanban_link` / `kanban_comment` — is injected into the system prompt of a session whose schema holds `kanban_create` (an orchestrator profile working a decomposition card) automatically; there is nothing to install. A dispatched worker gets the lifecycle half only, because it has no routing tools.
 
 A canonical orchestrator turn (two parallel researchers handing off to a writer):
 
@@ -1113,9 +1120,9 @@ bot> ✓ t_9fc1a3 completed by transcriber
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
 
-Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
-copy the owning task's durable notification subscriptions even without `parents`
-dependency links. Destinations, route anchors, and delivery modes are preserved;
+Sessions creating tasks through `kanban_create` or `hermes kanban create` — an orchestrator
+profile, or a CLI/API caller — copy the owning task's durable notification subscriptions even
+without `parents` dependency links. Destinations, route anchors, and delivery modes are preserved;
 a passive subscription is not upgraded to a wake by auto-subscribe. This copies
 existing subscriptions independently of `auto_subscribe_on_create`, which controls
 adding the current conversation as a new destination. No destination is invented
