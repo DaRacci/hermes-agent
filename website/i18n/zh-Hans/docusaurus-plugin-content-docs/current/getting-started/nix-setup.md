@@ -40,7 +40,7 @@ uv2nix 环境、覆盖包、插件依赖和开发 shell 使用同一个解释器
 
 ---
 
-## 快速开始（任意 Nix 用户）
+## 快速开始（任意 Nix 用户） {#quick-start-any-nix-user}
 
 无需克隆仓库。Nix 会自动获取、构建并运行所有内容：
 
@@ -552,6 +552,125 @@ scp ~/.hermes/mcp-tokens/my-oauth-server{,.client}.json \
 
 ---
 
+## Home Manager 模块
+
+该 flake 还导出 `homeManagerModules.default`。Hermes 是服务于单个用户的 agent：凭据、记忆、会话和 cron 任务都属于这个人。因此在个人机器上，用户服务才是正确的形态。它适用于 Home Manager 支持的各种发行版，而不限于 NixOS。
+
+选项集与 NixOS 模块完全相同，都是 `services.hermes-agent`，具备相同的 `settings`、`environmentFiles`、`documents`、`mcpServers`、`extraPlugins` 和 `backend` 选项。上面每个示例在这里都无需修改即可使用。只有必要的部分有所不同：
+
+| | NixOS 模块 | Home Manager 模块 |
+|---|---|---|
+| 运行身份 | 由你声明的系统用户，配合 `user`、`group` 和 `createUser` | 你自己 |
+| 状态目录 | `stateDir` 和 `/.hermes` | 直接设置 `hermesHome`，默认为 `~/.hermes` |
+| 服务 | `systemd.services` | Linux 上为 `systemd.user.services`，macOS 上为 `launchd.agents` |
+| PATH 上的 CLI | `addToSystemPackages`，为整个系统导出 `HERMES_HOME` | `programs.hermes-agent.enable`，仅为你自己的会话导出 |
+| 桌面应用 | 不支持，因为系统服务无法拥有用户会话 | `programs.hermes-agent.desktop.enable` |
+| 容器模式 | 支持 | 不支持，因为它需要 root 和 Docker socket |
+
+### 添加 Flake 输入
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    home-manager.url = "github:nix-community/home-manager";
+    home-manager.inputs.nixpkgs.follows = "nixpkgs";
+    hermes-agent.url = "github:NousResearch/hermes-agent";
+  };
+}
+```
+
+然后将该模块导入你的 Home Manager 配置。该配置可以是独立的，也可以放在 NixOS 或 nix-darwin 配置的 `home-manager.users.<name>` 下：
+
+```nix
+{
+  imports = [ hermes-agent.homeManagerModules.default ];
+
+  services.hermes-agent = {
+    enable = true;
+    gateway.enable = true;
+    settings.model.default = "anthropic/claude-sonnet-4";
+    environmentFiles = [ config.sops.secrets."hermes-env".path ];
+  };
+}
+```
+
+`home-manager switch` 会创建 `~/.hermes`、写入 `config.yaml`、构建 `.env`，并以用户服务的形式启动 gateway。
+
+:::warning 启用 linger，否则服务会在注销时停止
+请为你的账户启用 linger。没有 linger 时，systemd 会在你最后一个会话结束时停止用户管理器，gateway 也随之停止。Home Manager 无法设置 linger，因为 linger 是账户的属性：
+
+```nix
+# NixOS
+users.users.your-username.linger = true;
+```
+
+```bash
+# 其他环境
+sudo loginctl enable-linger your-username
+```
+
+macOS 没有等价选项。设置了 `RunAtLoad` 的 `launchd` agent 会在登录时启动，并持续运行。
+:::
+
+### 运行桌面 / 仪表盘后端
+
+`gateway.enable` 运行面向 Telegram、Discord、Slack 等平台的消息 gateway。Hermes Desktop 的**远程**连接和 Web 仪表盘连接的是*另一个*进程，即 `hermes serve` 或 `hermes dashboard`。（在同一台主机上运行的 Desktop 会通过 `hermes gateway ensure` 直接连接到 gateway 本身。）`backend.mode` 让该进程与 gateway 一起运行：
+
+```nix
+{
+  services.hermes-agent = {
+    enable = true;
+    gateway.enable = true;      # 消息平台
+    backend.mode = "dashboard"; # + 127.0.0.1:9119 上的浏览器仪表盘
+    backend.port = 9119;
+  };
+}
+```
+
+`serve` 在没有用户界面的情况下运行。它提供 Hermes Desktop 连接的 `/api/ws` 和 `/api/pty` socket，并且不构建 Web 应用。`dashboard` 提供上述全部内容，另外还提供浏览器管理面板。这两个进程与 gateway 共用同一个 `HERMES_HOME`，因此它们看到的会话、技能、记忆和 cron 任务完全相同。`backend.mode` 在 NixOS 模块上的工作方式相同，但在容器模式下不可用。
+
+:::warning 绑定到回环地址以外的地址
+默认地址是 `127.0.0.1`。绑定其他任何地址都会启动仪表盘的身份验证门。对于 `Host` 头与服务器绑定地址不一致的请求，服务器也会予以拒绝。这是针对 DNS 重绑定的防护。请绑定到你的客户端实际使用的名称或地址。
+:::
+
+### 运行 Webapp
+
+该包已预先构建并附带 [Webapp](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser)（浏览器中的 Hermes Desktop），因此运行时不会进行任何构建；store 是只读的。当相关设置启用时，gateway 会提供它（参见 [配置 → Webapp](../user-guide/configuration.md#webapp)）：
+
+```nix
+{
+  services.hermes-agent = {
+    enable = true;
+    gateway.enable = true;
+    settings.webapp = {
+      enabled = true;
+      host = "127.0.0.1";
+      port = 9120;
+    };
+  };
+}
+```
+
+用 `hermes webapp` 打开它。非回环的 `host` 或 `public_url` 需要[仪表盘的登录提供商](../user-guide/features/web-dashboard.md#authentication-gated-mode)之一，与仪表盘的要求相同。`nix build .#webapp` 会单独构建该 bundle。wrapper 将 `HERMES_WEBAPP_DIST` 指向它，因此 `hermes webapp --force-build` 没有可重建的内容，并会说明这一点。
+
+### 验证运行状态
+
+```bash
+# Linux
+systemctl --user status hermes-agent
+journalctl --user -u hermes-agent -f
+
+# macOS
+launchctl list | grep hermes
+tail -f ~/Library/Logs/hermes-agent.log
+
+hermes --version
+hermes config     # 显示 Nix 写入的配置
+```
+
+---
+
 ## 容器架构
 
 :::info
@@ -612,11 +731,75 @@ Nix 构建的二进制文件能在 Ubuntu 容器内运行，是因为 `/nix/stor
 
 ---
 
+## 使用 Flake（Overlay 与 lib）
+
+上面的 NixOS 模块和 Home Manager 模块会替你消费这个 flake。如果你改为把 `hermes-agent` 接入自己的 flake，那么这些就是入口：`packages.<system>.{default,minimal,messaging}` 输出、`overlays.default` 和 `overlays.locked` 两个 overlay，以及构建这些包所用的 `lib.mkHermesAgent` builder。
+
+### 使用 Overlay
+
+外部 flake 可以通过以下两个 overlay 之一引入该包：
+
+- `hermes-agent.overlays.default` 基于你自己的 `pkgs` 重新构建该包，附带与 `packages.<system>.default` 相同的可选组——所有平台通用的组，以及在 Linux 上额外附带的 `matrix`。
+- `hermes-agent.overlays.locked` 暴露本 flake 实际发布并测试的那份 derivation：与 `packages.<system>.default` 相同的输出路径。
+
+```nix
+{
+  inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
+  outputs = { hermes-agent, nixpkgs, ... }: {
+    nixpkgs.overlays = [ hermes-agent.overlays.default ];
+    # 或固定到经过测试的 derivation：
+    #   nixpkgs.overlays = [ hermes-agent.overlays.locked ];
+    # 两个 overlay 返回的都是完整变体。`extra*` 选项在它已附带的组之上追加：
+    #   pkgs.hermes-agent.override { extraPythonPackages = [ pkgs.python3Packages.requests ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
+    # `defaultDependencyGroups` 替换该列表而不是追加，因此 `[ ]` 会去掉所有可选组：
+    #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
+  };
+}
+```
+
+两者的区别在于各自跟随什么。`default` 基于你的 `pkgs` 重新实例化该包，因此覆盖某个共享依赖——`git.overrideAttrs`、换一个 `openssl`、或整份打过补丁的包集——都会改变 `pkgs.hermes-agent`。`locked` 是 flake 自身的实例化，会忽略这些覆盖，所以当你想要与本 flake 的 CI 构建结果完全一致时，应当选它。当你的 `nixpkgs` 就是本 flake 的 `nixpkgs` 时，两者解析到同一份 derivation。
+
+`defaultDependencyGroups` *替换*已附带的列表，而不是在其之上追加。因此 `pkgs.hermes-agent.override { defaultDependencyGroups = [ "messaging" "voice" ]; }` 只会用这两个组构建，而 `[ ]` 得到的是裸构建——与 `packages.<system>.minimal` 相同的 derivation。
+
+### 将 Flake 作为库使用（`mkHermesAgent`）
+
+`flake.lib.mkHermesAgent` 是本 flake 用来构建自身包的 builder——`packages.<system>.minimal` 以及由它派生的一切——也是消费者需要自行构建该包时受支持的入口，例如先给源码打补丁的 overlay。所有让构建可复现的东西（flake 输入、`pm/lock.json` 中的锁定、嵌入 `install-stamp.json` 的来源信息）都集中在一处，因此消费者不会偏离到第二套接线上。
+
+```nix
+inputs.hermes-agent.lib.mkHermesAgent {
+  pkgs = pkgs;                    # 必需——用于构建的包集
+  src = inputs.hermes-agent;      # 源码树；默认为该 flake 自身的源码
+  defaultDependencyGroups = [ ];  # 该变体附带的组（默认：无）
+  extraDependencyGroups = [ ];    # 在该变体自身的组之上追加的组
+  extraPythonPackages = [ ];      # 封闭 venv 的额外 Python 包
+  distance = 0;                   # 距带标记版本的提交数，用于 "+N.g<sha>"
+}
+```
+
+`src` 是一棵源码**树**：既可以是 flake 集本身（它会把 `rev`/`dirtyRev`/`lastModified` 带入安装戳），也可以是一个普通路径（不带来源信息，会得到中性的取值）。结果会经过 `callPackage`，因此 `makeOverridable` 也随之而来——`.override { ... }` 和 `.override (prev: ...)` 都可用，包括在 `prev.extraDependencyGroups` 之上追加。
+
+打补丁是调用方的事：把 `src` 指向已打过补丁的树，而不是一组补丁。
+
+```nix
+inputs.hermes-agent.lib.mkHermesAgent {
+  inherit pkgs;
+  src = builtins.path {
+    path = /path/to/already-patched/hermes-agent;
+    name = "hermes-agent-src";
+  };
+}
+```
+
+这里刻意没有 `patches` 参数。在 builder 内部应用补丁意味着要从一个 derivation 中读取出 `nix/hermes-agent.nix` 和 `hermes_cli/__init__.py`，也就是 import-from-derivation；同样的限制也排除了把 store 中的 derivation 作为 `src`——`src = pkgs.applyPatches { ... }` 只有在启用 import-from-derivation 时才能求值。如果你在求值期打补丁，请保留该补丁步骤本就需要的接线，或者先把打过补丁的树物化一次，再把结果交给 `builtins.path`。
+
+---
+
 ## 插件
 
 NixOS 模块支持声明式插件安装——无需命令式的 `hermes plugins install`。
 
-### 目录插件（`extraPlugins`）
+### 目录插件（`extraPlugins`） {#directory-plugins-extraplugins}
 
 对于只包含 `plugin.yaml` + `__init__.py` 的源码树插件（例如 [hermes-lcm](https://github.com/stephenschoettler/hermes-lcm)）：
 
@@ -658,16 +841,38 @@ services.hermes-agent.extraPythonPackages = [
 
 ### 可选依赖组（`extraDependencyGroups`）
 
-对于已在 hermes-agent 的 `pyproject.toml` 中声明、但所选包尚未附带的可选 extras，使用 `extraDependencyGroups` 在构建时将其包含到封闭的 venv 中：
+对于 hermes-agent 的 `pyproject.toml` 中声明的可选 extras，使用 `extraDependencyGroups` 在构建时将它们包含到封闭的 venv 中。对于所选包尚未附带的任何 extra，这都是必需的——在 Nix 上，无法在运行时向只读的 store 中安装。
 
 ```nix
 # 在包已附带的组之上添加 Google Meet 支持
 services.hermes-agent.extraDependencyGroups = [ "google-meet" ];
 ```
 
-这由 uv 与核心依赖在单次解析中完成——不需要 PYTHONPATH 补丁，没有冲突风险。可用的组与 `pyproject.toml` 中 `[project.optional-dependencies]` 的键对应（例如 `"google-meet"`、`"voice"`、`"matrix"`、`"mistral"`、`"bedrock"`）。
+`extraDependencyGroups` 和 `extraPythonPackages` 是在所选包已附带的组之上**追加**，从不替换它们。`default` 包已附带 `messaging`、`voice`、`exa` 以及下表中的其他组，因此再写这些组不会有任何变化。`pkgs.hermes-agent.override { extraDependencyGroups = [ ... ]; }` 也是如此。如需更小的构建，请从更小的包开始：`package = inputs.hermes-agent.packages.${system}.minimal;`（或 `#messaging`），或使用 `.override { defaultDependencyGroups = [ ]; }` 去掉附带的组，只列出你需要的组。
 
-`extraDependencyGroups` 和 `extraPythonPackages` 是在所选包已附带的组之上**追加**，从不替换它们。`default` 包已附带 `messaging`、`voice`、`exa` 等组，因此再写这些组不会有任何变化；`pkgs.hermes-agent.override { extraDependencyGroups = [ ... ]; }` 同理。如需更小的构建，请从更小的包开始：`package = inputs.hermes-agent.packages.${system}.minimal;`（或 `#messaging`），或使用 `.override { defaultDependencyGroups = [ ]; }` 去掉附带的组，只列出你需要的组。
+这些组在构建时参与核心依赖解析。相互冲突的依赖要求仍可能使该解析失败。下表列出常见的组；完整列表与平台标记以 `pyproject.toml` 为准。
+
+| 组 | 启用的功能 |
+|-------|-----------------|
+| `messaging` | Discord、Telegram、Slack |
+| `matrix` | Matrix/Element（mautrix，带加密；仅限 Linux） |
+| `dingtalk` | 钉钉 |
+| `feishu` | 飞书/Lark |
+| `voice` | 本地语音转文字（faster-whisper） |
+| `edge-tts` | Edge TTS 提供商 |
+| `tts-premium` | ElevenLabs TTS |
+| `anthropic` | 原生 Anthropic SDK（通过 OpenRouter 时不需要） |
+| `bedrock` | AWS Bedrock（boto3） |
+| `azure-identity` | Azure Entra ID 认证 |
+| `modal` | Modal 终端后端 |
+| `daytona` | Daytona 终端后端 |
+| `exa` | Exa 网页搜索 |
+| `firecrawl` | Firecrawl 网页搜索 |
+| `fal` | FAL 图像生成 |
+
+位于[插件目录](../user-guide/features/plugins.md)而非 Hermes 代码树中的记忆提供商（例如 Hindsight）不是 extras。请像安装任何目录插件一样用 `hermes plugins install hindsight` 安装它们，或通过 [`extraPlugins`](#directory-plugins-extraplugins) 以声明式方式指向该插件的源码树。
+
+也可以改用预构建的 `#messaging` 或 default flake 包，而不必逐个配置 extra（参见[快速开始](#quick-start-any-nix-user)）。
 
 **何时使用哪个：**
 
@@ -688,24 +893,6 @@ services.hermes-agent = {
   extraPythonPackages = [ config.services.hermes-agent.package.python.pkgs.redis ];  # 其 Python 依赖
   extraPackages = [ pkgs.redis ];            # 其需要的系统二进制文件
 };
-```
-
-### 使用 Overlay
-
-外部 flake 可以直接覆盖包：
-
-```nix
-{
-  inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
-  outputs = { hermes-agent, nixpkgs, ... }: {
-    nixpkgs.overlays = [ hermes-agent.overlays.default ];
-    # 然后：
-    #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
-    # 两者都是在 default 包附带的组之上追加。要去掉附带的组：
-    #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
-  };
-}
 ```
 
 ### 插件配置
@@ -850,7 +1037,55 @@ nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户�
 | `restart` | `str` | `"always"` | systemd `Restart=` 策略 |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` 值 |
 
-### 容器
+### Backend（`hermes serve` / `hermes dashboard`）
+
+该选项运行远程 Hermes Desktop 连接和 Web 仪表盘所连接的那个进程，并让它与 gateway 一起运行。它不能与 `container.enable` 同时使用。
+
+| 选项 | 类型 | 默认值 | 描述 |
+|---|---|---|---|
+| `backend.mode` | `enum ["none" "serve" "dashboard"]` | `"none"` | `serve` 在没有用户界面的情况下运行，提供 `/api/ws` 和 `/api/pty`。`dashboard` 还会提供浏览器面板。 |
+| `backend.host` | `str` | `"127.0.0.1"` | 绑定的地址。除回环地址以外的每个地址都会启动身份验证门。 |
+| `backend.port` | `port` | `9119` | 绑定的端口 |
+| `backend.extraArgs` | `listOf str` | `[]` | 后端命令的额外参数 |
+
+### 仅 Home Manager
+
+| 选项 | 类型 | 默认值 | 描述 |
+|---|---|---|---|
+| `hermesHome` | `str` | `"${config.home.homeDirectory}/.hermes"` | 直接指定 `HERMES_HOME`。NixOS 模块从 `stateDir` 构建它。 |
+| `gateway.enable` | `bool` | `false` | 运行消息 gateway。在 NixOS 模块上，gateway 就是服务本身，因此该模块没有此选项。 |
+
+### `programs.hermes-agent`（仅 Home Manager）
+
+Home Manager 把“为我安装这个应用”与“运行这个守护进程”分开。`services.hermes-agent` 负责状态、配置和守护进程。`programs.hermes-agent` 安装你要使用的东西，并从 services 读取 `hermesHome` 和后端地址。
+
+| 选项 | 类型 | 默认值 | 描述 |
+|---|---|---|---|
+| `enable` | `bool` | `false` | 将 `hermes` CLI 添加到 `home.packages`，并为你的 shell 导出 `HERMES_HOME` |
+| `package` | `package` | `services.hermes-agent.package` | 要安装的包。默认值会应用 services 中的 `extraPythonPackages` 和 `extraDependencyGroups`，因此两者是同一次构建。 |
+| `desktop.enable` | `bool` | `false` | 添加 Hermes Desktop 应用，在 Linux 上附带启动器条目 |
+| `desktop.package` | `package` | `package.hermesDesktop` | 桌面应用包。默认跟随 `package`，因此应用与 services 运行同一个 Hermes 运行时。 |
+
+```nix
+programs.hermes-agent = {
+  enable = true;
+  desktop.enable = true;
+};
+
+services.hermes-agent = {
+  enable = true;
+  backend.mode = "serve";
+  backend.sessionTokenFile = config.sops.secrets."hermes/desktop-token".path;
+};
+```
+
+启动器自身携带 `HERMES_HOME`。桌面菜单不读取任何 shell profile，因此 `programs.hermes-agent.enable` 通过 `home.sessionVariables` 导出的值只能到达交互式 shell。如果该值不在启动器中，应用会打开 `~/.hermes`，而 services 使用 `hermesHome`，于是你看不到任何会话和密钥。
+
+使用 `backend.sessionTokenFile` 时，应用会连接到服务的后端，而不是自己启动一个。双方都在启动时读取该文件，因此 token 不会进入任何 Nix store 路径。不设置该选项时，双方各自运行自己的后端。
+
+拆分之后，`services.hermes-agent.installPackage` 已被移除。仍然设置它的配置会收到一个指出替代方案的错误。
+
+### 容器（仅 NixOS）
 
 | 选项 | 类型 | 默认值 | 描述 |
 |---|---|---|---|
@@ -886,6 +1121,22 @@ nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户�
 └── workspace/                       # MESSAGING_CWD
     ├── SOUL.md                      # 来自 documents 选项
     └── （Agent 创建的文件）
+```
+
+### Home Manager
+
+```
+~/.hermes/                           # hermesHome（HERMES_HOME），权限 0700
+├── SOUL.md                          # 来自 hermesHomeFiles
+├── config.yaml                      # 由 Nix 写入，每次激活时合并
+├── .managed                         # 标记：指明管理它的系统
+├── .env                             # 从 environment + environmentFiles 重新写入
+├── auth.json                        # OAuth 凭据：预置后由 Hermes 拥有
+├── memories/  sessions/  skills/  cron/  logs/  plugins/
+└── （运行时状态）
+
+~/                                   # workingDirectory，默认为你的 home 目录
+└── AGENTS.md                        # 来自 documents 选项
 ```
 
 ### 容器模式
