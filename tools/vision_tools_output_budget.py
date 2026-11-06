@@ -9,7 +9,9 @@ the reasoning fallback *became* the tool result. Every analysis therefore gets
 * a wall-clock ``deadline`` for the whole call (download + encode + every provider attempt),
   enforced by :func:`agent.deadline.run_bounded_async` so it fires even when the loop is busy;
 * a ``max_analysis_chars`` ceiling on the returned text, with the truncation stated inline;
-* a ``max_reasoning_chars`` ceiling on the reasoning fallback.
+* a ``max_reasoning_chars`` ceiling on the reasoning fallback, which is still returned (it can be
+  all the model produced) but prefixed with :data:`REASONING_ONLY_MARKER` so a worker can tell
+  deliberation from a description.
 
 Config lives under ``auxiliary.vision`` (``deadline``, ``video_deadline``, ``max_analysis_chars``,
 ``max_reasoning_chars``). No ``max_tokens`` is forwarded to the provider — the max-tokens-knob
@@ -34,6 +36,14 @@ DEFAULT_MAX_ANALYSIS_CHARS = 80_000
 # route, nowhere near the 500 KB a stalled reasoning model produced.
 DEFAULT_MAX_REASONING_CHARS = 8_000
 
+# Inline label on a reasoning fallback that is still returned as the tool result: the text is the
+# model's deliberation, and an unmarked dump reads to a worker as a description of the image.
+REASONING_ONLY_MARKER = (
+    "[reasoning-only response — the model emitted no answer; this is its deliberation, "
+    "not a description]")
+
+# A ceiling below this makes the tool useless while still looking configured; documented in
+# website/docs/user-guide/features/vision.md.
 _MIN_ANALYSIS_CHARS = 1_000
 
 
@@ -76,7 +86,11 @@ def resolve_deadline(kind: str) -> float | None:
 
 
 def resolve_max_analysis_chars() -> int:
-    """Character ceiling for the returned analysis (``auxiliary.vision.max_analysis_chars``)."""
+    """Character ceiling for the returned analysis (``auxiliary.vision.max_analysis_chars``).
+
+    Never below :data:`_MIN_ANALYSIS_CHARS`: a lower ceiling leaves the tool looking configured
+    while it cannot return a usable description. The docs table states the floor.
+    """
     raw = _cfg_vision("max_analysis_chars")
     if raw is None or isinstance(raw, bool):
         return DEFAULT_MAX_ANALYSIS_CHARS
@@ -87,8 +101,12 @@ def resolve_max_analysis_chars() -> int:
     return max(value, _MIN_ANALYSIS_CHARS)
 
 
-def resolve_max_reasoning_chars() -> int:
-    """Character ceiling for a reasoning-only fallback (``auxiliary.vision.max_reasoning_chars``)."""
+def resolve_max_reasoning_chars() -> int | None:
+    """Character ceiling for a reasoning-only fallback (``auxiliary.vision.max_reasoning_chars``).
+
+    ``0`` or a negative value disables this extra ceiling, the way ``deadline: 0`` disables the
+    wall clock; the analysis ceiling still bounds whatever text reaches the worker.
+    """
     raw = _cfg_vision("max_reasoning_chars")
     if raw is None or isinstance(raw, bool):
         return DEFAULT_MAX_REASONING_CHARS
@@ -96,7 +114,7 @@ def resolve_max_reasoning_chars() -> int:
         value = int(raw)
     except (TypeError, ValueError):
         return DEFAULT_MAX_REASONING_CHARS
-    return value if value > 0 else DEFAULT_MAX_REASONING_CHARS
+    return value if value > 0 else None
 
 
 def _truncation_note(original_chars: int, kept_chars: int) -> str:
@@ -144,5 +162,9 @@ def deadline_result(kind: str, timeout_s: float | None) -> dict:
 
 
 def is_timeout_error(exc: BaseException) -> bool:
-    """True when a provider error is a timeout (SDK classes do not share ``TimeoutError``)."""
-    return type(exc).__name__.endswith("TimeoutError") or isinstance(exc, TimeoutError) or "timed out" in str(exc).lower()
+    """True when a provider error is a timeout (SDK classes do not share ``TimeoutError``).
+
+    Matched by class only. Download timeouts reach this same handler and say "timed out" in their
+    text too, so a text match would report a failed image/video fetch as a stalled vision model.
+    """
+    return isinstance(exc, TimeoutError) or type(exc).__name__.endswith("TimeoutError")

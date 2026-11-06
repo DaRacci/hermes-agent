@@ -78,6 +78,17 @@ class TestConfigKnobs:
         _config(monkeypatch, deadline=0)
         assert budget.resolve_deadline("image") is None
 
+    def test_non_positive_max_reasoning_chars_disables_the_extra_ceiling(self, monkeypatch):
+        """``0`` and negative mean the same as ``deadline: 0``; the analysis ceiling still applies."""
+        for raw in (0, -1):
+            _config(monkeypatch, max_reasoning_chars=raw)
+            assert budget.resolve_max_reasoning_chars() is None, raw
+
+    def test_max_analysis_chars_has_a_floor(self, monkeypatch):
+        """A ceiling under 1,000 chars would leave the tool useless; the floor is documented."""
+        _config(monkeypatch, max_analysis_chars=10)
+        assert budget.resolve_max_analysis_chars() == 1_000
+
 
 class TestAnalysisCap:
     def test_cap_appends_an_inline_truncation_note(self, monkeypatch):
@@ -113,8 +124,8 @@ class TestAnalysisCap:
 
 class TestReasoningFallback:
     @pytest.mark.asyncio
-    async def test_reasoning_only_response_is_bounded(self, tmp_path, monkeypatch):
-        """A reasoning model that never emits content must not return its chain-of-thought."""
+    async def test_reasoning_only_response_is_marked_and_bounded(self, tmp_path, monkeypatch):
+        """A reasoning model that never emits content must not return deliberation unmarked."""
         from agent.auxiliary_client import extract_content_or_reasoning
 
         _config(monkeypatch, max_reasoning_chars=1_200)
@@ -125,8 +136,40 @@ class TestReasoningFallback:
         result = await _analyze(tmp_path)
 
         assert result["success"] is True
-        assert len(result["analysis"]) == 1_200
-        assert set(result["analysis"]) == {"r"}
+        assert result["reasoning_only"] is True
+        assert result["analysis"].startswith(budget.REASONING_ONLY_MARKER)
+        body = result["analysis"].removeprefix(budget.REASONING_ONLY_MARKER).strip()
+        assert len(body) == 1_200
+        assert set(body) == {"r"}
+
+    @pytest.mark.asyncio
+    async def test_a_content_answer_is_not_marked(self, tmp_path, monkeypatch):
+        """The ordinary path stays exactly as it was: no marker, no ``reasoning_only`` key."""
+        _config(monkeypatch)
+        monkeypatch.setattr(
+            "tools.vision_tools.async_call_llm", _async_return(_content_response("A dashboard.")))
+
+        result = await _analyze(tmp_path)
+
+        assert result["success"] is True
+        assert result["analysis"] == "A dashboard."
+        assert "reasoning_only" not in result
+
+    @pytest.mark.asyncio
+    async def test_reasoning_only_is_still_marked_with_the_ceiling_disabled(self, tmp_path, monkeypatch):
+        """``max_reasoning_chars: 0`` lifts the extra ceiling, not the marker."""
+        from agent.auxiliary_client import extract_content_or_reasoning
+
+        _config(monkeypatch, max_reasoning_chars=0)
+        response = {"choices": [{"message": {"content": "", "reasoning": "deliberating " * 100}}]}
+        monkeypatch.setattr("tools.vision_tools.async_call_llm", _async_return(response))
+        monkeypatch.setattr("tools.vision_tools.extract_content_or_reasoning", extract_content_or_reasoning)
+
+        result = await _analyze(tmp_path)
+
+        assert result["reasoning_only"] is True
+        assert result["analysis"].startswith(budget.REASONING_ONLY_MARKER)
+        assert "deliberating" in result["analysis"]
 
 
 class TestDeadline:
@@ -168,6 +211,25 @@ class TestDeadline:
         assert result["retryable"] is True
 
     @pytest.mark.asyncio
+    async def test_download_timeout_is_not_reported_as_a_model_timeout(self, tmp_path, monkeypatch):
+        """An image/video fetch that times out is not the vision model stalling."""
+        _config(monkeypatch)
+
+        class ReadTimeout(Exception):  # shaped like httpx.ReadTimeout: a transport timeout
+            pass
+
+        async def timeout(**_kwargs):
+            raise ReadTimeout("The read operation timed out")
+
+        monkeypatch.setattr("tools.vision_tools.async_call_llm", timeout)
+
+        result = await _analyze(tmp_path)
+
+        assert result["success"] is False
+        assert result.get("error_type") is None
+        assert "vision model timed out" not in result["analysis"]
+
+    @pytest.mark.asyncio
     async def test_deadline_disabled_lets_a_slow_call_finish(self, tmp_path, monkeypatch):
         _config(monkeypatch, deadline=0)
 
@@ -189,3 +251,20 @@ def _async_return(value):
         return value
 
     return _call
+
+
+class TestTimeoutClassification:
+    """``is_timeout_error`` matches provider timeout *classes*, never message text."""
+
+    def test_provider_timeout_classes_are_timeouts(self):
+        class APITimeoutError(Exception):  # openai/anthropic SDK shape
+            pass
+
+        assert budget.is_timeout_error(APITimeoutError("Request timed out.")) is True
+        assert budget.is_timeout_error(TimeoutError("provider gave up")) is True
+
+    def test_a_transport_timeout_is_not_a_model_timeout(self):
+        class ReadTimeout(Exception):  # httpx.ReadTimeout: download or socket read
+            pass
+
+        assert budget.is_timeout_error(ReadTimeout("The read operation timed out")) is False
