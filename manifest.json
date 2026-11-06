@@ -172,6 +172,22 @@
         "skills/autonomous-ai-agents/hermes-agent/references/debugging-tui-commands.md"
       ],
       "status": "active"
+    },
+    {
+      "slug": "sdlc-review-handoff-verification",
+      "branch": "patch/sdlc-review-handoff-verification",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 100,
+      "tests": [
+        "tests/skills/test_skill_docs_contract.py",
+        "tests/skills/test_skill_pages_match_shipped_skills.py"
+      ],
+      "files_glob": [
+        "skills/devops/sdlc-review/**",
+        "website/docs/user-guide/skills/bundled/devops/devops-sdlc-review.md"
+      ],
+      "status": "active"
     }
   ]
 }
