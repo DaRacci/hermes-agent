@@ -462,6 +462,32 @@ def discover_skills() -> list[tuple[dict[str, Any], dict[str, Any]]]:
     return results
 
 
+def build_skill_index(entries: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    """name -> meta, for related-skill cross-linking. Prefer bundled on a collision."""
+    skill_index: dict[str, dict[str, Any]] = {}
+    for meta, parsed in entries:
+        name = parsed["frontmatter"].get("name", meta["slug"])
+        if name not in skill_index or meta["source_kind"] == "bundled":
+            skill_index[name] = meta
+    return skill_index
+
+
+def render_all_pages(entries: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[Path, str]:
+    """The full run's output as data: page path -> page content, nothing written.
+
+    ``main`` writes these; ``tests/skills/test_skill_pages_match_shipped_skills.py``
+    compares them with the committed files. One code path renders both, so the
+    freshness contract cannot drift from what a regeneration would actually produce.
+    """
+    skill_index = build_skill_index(entries)
+    return {
+        page_output_path(meta): render_skill_page(
+            meta, parsed["frontmatter"], parsed["body"], skill_index=skill_index
+        )
+        for meta, parsed in entries
+    }
+
+
 def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
     by_cat: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
     for meta, parsed in entries:
@@ -759,22 +785,10 @@ def main():
     entries = discover_skills()
     print(f"Discovered {len(entries)} skills")
 
-    # Build name -> meta index for related-skill cross-linking
-    skill_index: dict[str, dict[str, Any]] = {}
-    for meta, parsed in entries:
-        name = parsed["frontmatter"].get("name", meta["slug"])
-        # Prefer bundled over optional if a name collision exists
-        if name not in skill_index or meta["source_kind"] == "bundled":
-            skill_index[name] = meta
-
     # Write per-skill pages
     written: set[Path] = set()
-    for meta, parsed in entries:
-        out_path = page_output_path(meta)
+    for out_path, content in render_all_pages(entries).items():
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        content = render_skill_page(
-            meta, parsed["frontmatter"], parsed["body"], skill_index=skill_index
-        )
         out_path.write_text(content, encoding="utf-8")
         written.add(out_path.resolve())
     print(f"Wrote {len(written)} per-skill pages under {SKILLS_PAGES}")
