@@ -50,7 +50,6 @@ let
 in
 pkgs.callPackage "${src}/nix/hermes-agent.nix" {
   inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-  npm-lockfile-fix = inputs.npm-lockfile-fix.packages.${pkgs.stdenv.hostPlatform.system}.default;
   inherit pmPackages;
 
   # Passed explicitly so `override (prev: ...)` sees them: an argument default
