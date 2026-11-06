@@ -1,7 +1,7 @@
 ---
 name: sdlc-review
 description: Review Kanban handoffs and route verified outcomes.
-version: 1.1.0
+version: 1.2.0
 author: Jakub Wolniewicz (@frizikk) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -155,6 +155,21 @@ Explain the blocked decision and the smallest information needed to continue.
 ### 4. Preserve role separation
 
 Do not edit the implementation while acting as reviewer. Request changes and let the implementer produce the next candidate; then independently verify that candidate in the next review run.
+
+## Handoff verification
+
+A handoff summary is a claim, and a `completed` status is not an acceptance. Verify from the artifacts:
+
+- **Read the card's comments and events, not the notification.** A worker can complete while reporting a blocked edit or an item under `not_run`; `kanban_show` carries that, the one-line completion notice does not. Treat every `not_run` entry as unverified.
+- **PR-bound work:** fetch the PR ref from the **base** repository, not the fork (`git fetch <base-remote> refs/pull/<n>/head:pr-<n>`) — a fork does not expose it at that path. Then `git diff --shortstat pr-<n>~1 pr-<n>`, and `git rev-list --count pr-<n>..<base>/master`: zero means it is based on the current head.
+- **Absence checks must read the branch, not the working tree:** `git show pr-<n>:<path> | grep -c <symbol>`. A failed `git show` emits nothing, which greps as "clean" — a silent false pass.
+- **Local-branch work:** resolve the worktree from the worker's own metadata; it is not necessarily under `projects/<repo>`, and two clones of one origin can coexist. `git branch -vv` showing "ahead N" with no upstream is the proof it is unpushed.
+- **Run the deliverable yourself.** For a Python package a throwaway venv (`uv venv`, `uv pip install -e . pytest`) is enough; then probe the failure mode the scheduler will actually hit (missing config → clean error, non-zero exit, nothing written).
+- **A blocked edit is a follow-up card, not a review failure.** File it for the owning lane, pinned to the same branch and worktree, with "no push" and a one-line acceptance — it must land before the branch merges.
+- **State the boundary.** Name what you could not execute and why (no builder, no evaluator, no credentials) instead of implying the whole change was exercised.
+- **Landing after an upstream merge:** probe the rebase in a throwaway worktree before touching the real one, never rebase a worktree whose card is still `running`, and re-run the suite on the tree you will actually run — rebased *or* fast-forwarded. A rebase rewrites every SHA, so the handoff's commit ids become dead references; publish the new ones. A fast-forward keeps the SHAs but still moves the branch, so prove the target carries the fix with `git branch --contains <sha>` rather than assuming the merge landed.
+
+See `references/handoff-verification.md` for the exact command recipes, the landing sequence, and the forge-intake routing note.
 
 ## Pitfalls
 
