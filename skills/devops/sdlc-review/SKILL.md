@@ -1,7 +1,7 @@
 ---
 name: sdlc-review
 description: Review Kanban handoffs and route verified outcomes.
-version: 1.2.0
+version: 1.2.1
 author: Jakub Wolniewicz (@frizikk) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -163,6 +163,7 @@ A handoff summary is a claim, and a `completed` status is not an acceptance. Ver
 - **Read the card's comments and events, not the notification.** A worker can complete while reporting a blocked edit or an item under `not_run`; `kanban_show` carries that, the one-line completion notice does not. Treat every `not_run` entry as unverified.
 - **PR-bound work:** fetch the PR ref from the **base** repository, not the fork (`git fetch <base-remote> refs/pull/<n>/head:pr-<n>`) — a fork does not expose it at that path. Then `git diff --shortstat pr-<n>~1 pr-<n>`, and `git rev-list --count pr-<n>..<base>/master`: zero means it is based on the current head.
 - **Absence checks must read the branch, not the working tree:** `git show pr-<n>:<path> | grep -c <symbol>`. A failed `git show` emits nothing, which greps as "clean" — a silent false pass.
+- **A claimed commit may live in a repo you do not have configured.** Do not read "not in my clone" as "the work is missing". `git ls-remote <url> | grep refs/heads/<branch>` proves a branch and its sha without cloning; then `git init` a scratch dir and `git fetch --depth 1 <url> <branch>` to inspect that tree with `git show FETCH_HEAD:<path>`. Use it to verify a handoff's shas against the fork it actually names, rather than the remote the checkout happens to have.
 - **Local-branch work:** resolve the worktree from the worker's own metadata; it is not necessarily under `projects/<repo>`, and two clones of one origin can coexist. `git branch -vv` showing "ahead N" with no upstream is the proof it is unpushed.
 - **Run the deliverable yourself.** For a Python package a throwaway venv (`uv venv`, `uv pip install -e . pytest`) is enough; then probe the failure mode the scheduler will actually hit (missing config → clean error, non-zero exit, nothing written).
 - **A blocked edit is a follow-up card, not a review failure.** File it for the owning lane, pinned to the same branch and worktree, with "no push" and a one-line acceptance — it must land before the branch merges.
