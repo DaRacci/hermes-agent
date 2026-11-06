@@ -223,6 +223,16 @@ The `vision_analyze` tool itself follows the same routing. When the active main 
 
 For text-only main models (or providers whose tool-result channel doesn't carry images), `vision_analyze` falls back to the legacy path: it asks the configured auxiliary vision model to describe the image and returns the description as plain text. Either way the calling tool signature is the same — the tool decides which path to take at runtime based on the active model.
 
+That describer call is bounded on three axes, so one stalled or over-talkative vision model cannot consume a whole turn:
+
+| Key (under `auxiliary.vision`) | Default | What it bounds |
+|---|---|---|
+| `deadline` | `240` (video `360`) | Wall clock for the **whole** call — download, encode, and every provider attempt including the client's internal retries. On expiry the tool returns `{"success": false, "error_type": "vision_deadline_exceeded", "retryable": true}`, which fires before the concurrent-batch cap (`timeouts.tools.concurrent_batch`, default 420s) can kill it with an opaque `timed out after 420.0s`. `0` disables it. |
+| `max_analysis_chars` | `80000` | The returned description. A longer answer is cut and the tool result says so inline (`[output truncated: … the first N are shown …]`) plus `"truncated": true`, so a worker never has to page a spillover file back in. |
+| `max_reasoning_chars` | `8000` | The reasoning fallback. A reasoning model that burns its output budget thinking and never emits content would otherwise return its whole chain-of-thought as the "analysis". |
+
+A vision route that keeps answering with reasoning and no content is misconfigured, not merely slow: point `auxiliary.vision` at a non-reasoning vision model (or set its `reasoning_effort: none`) rather than raising `deadline`.
+
 Every other tool that hands the model an image uses this same decision: browser screenshots, `computer_use` captures (which are described by the auxiliary vision model when the main model can't take them natively), and [MCP image results](mcp.md#image-results). `agent.image_input_mode: text` therefore keeps pixels out of all of them.
 
 ### SVG and other non-raster images on Responses backends
