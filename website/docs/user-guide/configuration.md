@@ -1667,7 +1667,10 @@ auxiliary:
                                # returns a typed error instead of the batch guard's opaque timeout.
     video_deadline: 360        # same, for video_analyze (its per-attempt floor is 180s)
     max_analysis_chars: 80000  # ceiling on the returned description; truncation is stated inline
-    max_reasoning_chars: 8000  # ceiling when the model returned reasoning but no content
+                               # (values below 1000 are raised to 1000)
+    max_reasoning_chars: 8000  # ceiling when the model returned reasoning but no content; the
+                               # result is prefixed "[reasoning-only response — …]" and sets
+                               # "reasoning_only": true (0 = no extra ceiling)
     max_concurrency: 8         # max concurrent image encode/resize bursts across the process
                                # (default: host CPU core count, no ceiling) — bounds only the
                                # CPU-bound encode step so a video-frame fan-out can't saturate
