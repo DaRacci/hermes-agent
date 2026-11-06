@@ -1659,8 +1659,15 @@ auxiliary:
     model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
     base_url: ""               # Custom OpenAI-compatible endpoint (overrides provider)
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
-    timeout: 120               # seconds — LLM API call timeout; vision payloads need generous timeout
+    timeout: 120               # seconds — per-attempt LLM API call timeout; vision payloads need generous timeout
     download_timeout: 30       # seconds — image HTTP download; increase for slow connections
+    deadline: 240              # seconds — wall clock for the WHOLE image call, every provider attempt
+                               # and internal retry included (0 = unbounded). Keep it under
+                               # timeouts.tools.concurrent_batch (default 420) so a stalled route
+                               # returns a typed error instead of the batch guard's opaque timeout.
+    video_deadline: 360        # same, for video_analyze (its per-attempt floor is 180s)
+    max_analysis_chars: 80000  # ceiling on the returned description; truncation is stated inline
+    max_reasoning_chars: 8000  # ceiling when the model returned reasoning but no content
     max_concurrency: 8         # max concurrent image encode/resize bursts across the process
                                # (default: host CPU core count, no ceiling) — bounds only the
                                # CPU-bound encode step so a video-frame fan-out can't saturate

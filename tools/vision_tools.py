@@ -53,6 +53,12 @@ from tools.vision_tools_image_prep import (
     _image_exceeds_dimension,
     _normalize_to_supported_image,
     _validate_raster_image_decodable)
+from tools.vision_tools_output_budget import (
+    cap_analysis as _cap_analysis,
+    deadline_result as _deadline_result,
+    is_timeout_error as _is_timeout_error,
+    resolve_deadline as _resolve_analysis_deadline,
+    resolve_max_reasoning_chars as _resolve_max_reasoning_chars)
 
 logger = logging.getLogger(__name__)
 
@@ -819,14 +825,18 @@ def _debug_call_data(kind: str, source: str, user_prompt: str, model) -> dict:
 
 async def _call_vision_llm(call_kwargs: dict, empty_log: str, response=None):
     """Aux vision LLM analysis text, retrying once on empty content (reasoning-only response).
-    ``response``: an already-made first call (the image path handles size-error retries itself)."""
+    ``response``: an already-made first call (the image path handles size-error retries itself).
+    The reasoning fallback is capped: a stalled reasoning model answers with chain-of-thought, and
+    uncapped that becomes a multi-hundred-KB tool result."""
     _load_auxiliary_client()
+    max_reasoning_chars = _resolve_max_reasoning_chars()
     if response is None:
         response = await async_call_llm(**call_kwargs)
-    analysis = extract_content_or_reasoning(response)
+    analysis = extract_content_or_reasoning(response, max_reasoning_chars=max_reasoning_chars)
     if not analysis:
         logger.warning(empty_log)
-        analysis = extract_content_or_reasoning(await async_call_llm(**call_kwargs))
+        analysis = extract_content_or_reasoning(
+            await async_call_llm(**call_kwargs), max_reasoning_chars=max_reasoning_chars)
     return analysis
 
 
@@ -856,25 +866,51 @@ async def _run_analysis(
             return tool_error("Interrupted", success=False)
         logger.info("Analyzing %s: %s", kind, source[:60])
         logger.info("User prompt: %s", user_prompt[:100])
-        analysis, scale_note = await stage(user_prompt, debug_call_data, temp_paths)
-        analysis_length = len(analysis) if analysis else 0
+        # Nothing between this tool and the provider bounds the call: the aux client retries
+        # internally and its per-attempt timeout is not a total. Without this deadline a stalled
+        # route is killed by the 420s concurrent-batch guard and the worker only sees an opaque
+        # "timed out after 420.0s"; with it the call ends on its own budget with a typed error.
+        from agent.deadline import run_bounded_async
+        bounded = await run_bounded_async(
+            stage(user_prompt, debug_call_data, temp_paths),
+            _resolve_analysis_deadline(kind),
+            label=f"vision_{kind}_analysis")
+        if bounded.timed_out:
+            debug_call_data["error"] = f"{kind} analysis exceeded its {bounded.timeout_s:.0f}s deadline"
+            logger.warning("%s analysis abandoned at its %.0fs deadline", kind, bounded.timeout_s)
+            return finish(_deadline_result(kind, bounded.timeout_s))
+        analysis, scale_note = bounded.value
+        analysis, analysis_length, truncated = _cap_analysis(kind, analysis)
         logger.info("%s analysis completed (%s characters)", kind.capitalize(), analysis_length)
         analysis = analysis or f"There was a problem with the request and the {kind} could not be analyzed."
         result = {"success": True, "analysis": f"[{scale_note}] {analysis}" if scale_note else analysis}
         if scale_note:
             result["scale_note"] = scale_note
+        if truncated:
+            result["truncated"] = True
+            result["analysis_chars"] = analysis_length
         debug_call_data.update(success=True, analysis_length=analysis_length)
         return finish(result)
     except Exception as e:
         error_msg = f"Error analyzing {kind}: {e!s}"
         logger.error("%s", error_msg, exc_info=True)
         err_str = str(e).lower()
-        template = next(
-            (tpl for hints, tpl in rules if any(hint in err_str for hint in hints)),
-            f"There was a problem with the request and the {kind} could not be analyzed. Error: {{e}}")
-        analysis = template.format(e=e, model=model)
+        result: dict = {"success": False, "error": error_msg}
+        if _is_timeout_error(e):
+            result["error_type"] = "vision_timeout"
+            result["retryable"] = True
+            analysis = (
+                f"The vision model timed out during {kind} analysis ({e}). Retry once with a "
+                f"narrower question or a `region` crop; if it times out again, stop calling vision "
+                f"and report the blocker.")
+        else:
+            template = next(
+                (tpl for hints, tpl in rules if any(hint in err_str for hint in hints)),
+                f"There was a problem with the request and the {kind} could not be analyzed. Error: {{e}}")
+            analysis = template.format(e=e, model=model)
+        result["analysis"] = analysis
         debug_call_data["error"] = error_msg
-        return finish({"success": False, "error": error_msg, "analysis": analysis})
+        return finish(result)
     finally:
         for path in temp_paths:
             if path and path.exists():
