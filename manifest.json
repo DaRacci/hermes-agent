@@ -194,6 +194,42 @@
         "website/docs/user-guide/skills/bundled/devops/devops-sdlc-review.md"
       ],
       "status": "active"
+    },
+    {
+      "slug": "vision-deadline-output-cap",
+      "branch": "patch/vision-deadline-output-cap",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 110,
+      "tests": [
+        "tests/tools/test_vision_output_budget.py",
+        "tests/tools/test_vision_tools.py"
+      ],
+      "files_glob": [
+        "hermes_cli/config_runtime_keys.py",
+        "tools/vision_tools.py",
+        "tools/vision_tools_output_budget.py",
+        "tests/tools/test_vision_output_budget.py",
+        "website/docs/user-guide/configuration.md",
+        "website/docs/user-guide/features/vision.md"
+      ],
+      "status": "active"
+    },
+    {
+      "slug": "protected-instruction-headless-refusal",
+      "branch": "patch/protected-instruction-headless-refusal",
+      "upstream_pr": null,
+      "legacy_branch": null,
+      "order": 120,
+      "tests": [
+        "tests/tools/test_protected_instruction_cli_channel.py"
+      ],
+      "files_glob": [
+        "tests/tools/test_protected_instruction_cli_channel.py",
+        "tools/approval_context.py",
+        "tools/file_tools_write_guards.py"
+      ],
+      "status": "active"
     }
   ]
 }
