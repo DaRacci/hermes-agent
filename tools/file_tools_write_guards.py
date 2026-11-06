@@ -283,11 +283,19 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 
     try:
         import tools.approval as _approval
-        from tools.approval_context import _fire_approval_hook, get_current_session_key
+        from tools.approval_context import (
+            _fire_approval_hook, _notifier_cannot_reach_a_human, get_current_session_key)
         from tools.approval_gateway_wait import _await_gateway_decision
         from tools.approval_prompt import prompt_dangerous_approval
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
+
+    # Decide on the HEADLESS fact first, before either surface parks a prompt. Both surfaces keep a
+    # callback registered on a headless turn — the CLI panel on `chat -q`, and a Kanban worker's own
+    # gateway notify callback for its route (agent/managed_worker.py) — so callback presence says nothing
+    # about a human, and asking either one waits out the full approvals.timeout before failing anyway.
+    if _notifier_cannot_reach_a_human():
+        return blocked.format(why=_NO_HUMAN)
 
     # Gateway surface: block on the button round-trip when a notify callback
     # is registered for this session. One-operation only — no scope buttons.
@@ -322,11 +330,6 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         if callback is None:
             # No human channel (script, cron, background thread): fail closed —
             # auto-approving here would recreate the persistence vector.
-            return blocked.format(why=_NO_HUMAN)
-        # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
-        # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
-        from tools.approval_context import _no_user_can_answer
-        if _no_user_can_answer():
             return blocked.format(why=_NO_HUMAN)
         # Same observer payload as the gateway branch (#131876), fired like the
         # dangerous-command CLI prompt in tools/approval.py.

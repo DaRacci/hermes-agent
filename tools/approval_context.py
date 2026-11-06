@@ -213,6 +213,18 @@ def _is_single_query_approval_context() -> bool:
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 
+def _notifier_cannot_reach_a_human() -> bool:
+    """True when even a registered gateway notify callback reaches nobody: a finite turn (``chat -q``,
+    every Kanban worker, ``-z``), a cron job, or a notifier-blind unattended platform.
+
+    Callers that *hold* a notify callback ask this instead of ``_no_user_can_answer``: an
+    ``api_server`` turn registers one only when its client can resolve ``/approve``, so its prompt
+    is answerable. See ``_NOTIFIER_BLIND_APPROVAL_PLATFORMS``.
+    """
+    return (_is_single_query_approval_context() or _is_cron_approval_context()
+            or _get_session_platform() in _NOTIFIER_BLIND_APPROVAL_PLATFORMS)
+
+
 def _no_user_can_answer() -> bool:
     """True in single-query (-q), cron and unattended-platform sessions. `hermes chat -q` still registers the
     CLI panel callback, so a prompt that only checks for a callback would wait the full timeout for nobody."""
