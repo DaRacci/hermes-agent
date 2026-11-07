@@ -53,6 +53,13 @@ from tools.vision_tools_image_prep import (
     _image_exceeds_dimension,
     _normalize_to_supported_image,
     _validate_raster_image_decodable)
+from tools.vision_tools_output_budget import (
+    REASONING_ONLY_MARKER as _REASONING_ONLY_MARKER,
+    cap_analysis as _cap_analysis,
+    deadline_result as _deadline_result,
+    is_timeout_error as _is_timeout_error,
+    resolve_deadline as _resolve_analysis_deadline,
+    resolve_max_reasoning_chars as _resolve_max_reasoning_chars)
 
 logger = logging.getLogger(__name__)
 
@@ -817,17 +824,50 @@ def _debug_call_data(kind: str, source: str, user_prompt: str, model) -> dict:
         "error": None, "success": False, "analysis_length": 0, "model_used": model, f"{kind}_size_bytes": 0}
 
 
-async def _call_vision_llm(call_kwargs: dict, empty_log: str, response=None):
+class _VisionReply(NamedTuple):
+    """The aux model's text, and whether it is only the model's deliberation.
+
+    ``extract_content_or_reasoning`` falls back to the reasoning fields without saying so; that
+    fallback is still returned (it can be all the model produced) but it must be labelled, because
+    a reasoning dump is not a description of the image.
+    """
+
+    text: str
+    reasoning_only: bool
+
+
+def _visible_content(response) -> str:
+    """The reply's own content with no reasoning fallback: the same extraction applied to a message
+    that has no reasoning fields left to fall back to. Empty when the model only deliberated."""
+    from agent.auxiliary_client import _coerce_llm_message, _message_field
+    message = _coerce_llm_message(response)
+    if message is None:
+        return ""
+    if isinstance(message, str):
+        return message.strip()
+    return extract_content_or_reasoning({"content": _message_field(message, "content")})
+
+
+def _read_reply(response, max_reasoning_chars: int | None) -> _VisionReply:
+    """One aux vision response → its text and whether that text is a reasoning fallback."""
+    text = extract_content_or_reasoning(response, max_reasoning_chars=max_reasoning_chars)
+    return _VisionReply(text, bool(text) and not _visible_content(response))
+
+
+async def _call_vision_llm(call_kwargs: dict, empty_log: str, response=None) -> _VisionReply:
     """Aux vision LLM analysis text, retrying once on empty content (reasoning-only response).
-    ``response``: an already-made first call (the image path handles size-error retries itself)."""
+    ``response``: an already-made first call (the image path handles size-error retries itself).
+    The reasoning fallback is capped and flagged: a stalled reasoning model answers with
+    chain-of-thought, and unmarked that reads to the worker as a description of the image."""
     _load_auxiliary_client()
+    max_reasoning_chars = _resolve_max_reasoning_chars()
     if response is None:
         response = await async_call_llm(**call_kwargs)
-    analysis = extract_content_or_reasoning(response)
-    if not analysis:
+    reply = _read_reply(response, max_reasoning_chars)
+    if not reply.text:
         logger.warning(empty_log)
-        analysis = extract_content_or_reasoning(await async_call_llm(**call_kwargs))
-    return analysis
+        reply = _read_reply(await async_call_llm(**call_kwargs), max_reasoning_chars)
+    return reply
 
 
 async def _run_analysis(
@@ -835,10 +875,10 @@ async def _run_analysis(
     stage: Callable[[str, dict, list], Awaitable[tuple]]) -> str:
     """Aux-LLM analysis skeleton for image/video: interrupt check → ``stage`` → JSON result.
 
-    ``stage(user_prompt, debug_call_data, temp_paths)`` returns ``(analysis, scale_note)``; temp
-    files it appends to ``temp_paths`` are deleted in ``finally``. Returns JSON
-    ``{"success": bool, "analysis": str}`` (``analysis`` carries the error explanation on failure).
-    """
+    ``stage(user_prompt, debug_call_data, temp_paths)`` returns ``(reply, scale_note)``, where
+    ``reply`` is a :class:`_VisionReply`; temp files it appends to ``temp_paths`` are deleted in
+    ``finally``. Returns JSON ``{"success": bool, "analysis": str}`` (``analysis`` carries the error
+    explanation on failure)."""
     tool_name, rules = _ANALYSIS_KINDS[kind]
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
@@ -856,25 +896,56 @@ async def _run_analysis(
             return tool_error("Interrupted", success=False)
         logger.info("Analyzing %s: %s", kind, source[:60])
         logger.info("User prompt: %s", user_prompt[:100])
-        analysis, scale_note = await stage(user_prompt, debug_call_data, temp_paths)
-        analysis_length = len(analysis) if analysis else 0
+        # Nothing between this tool and the provider bounds the call: the aux client retries
+        # internally and its per-attempt timeout is not a total. Without this deadline a stalled
+        # route is killed by the 420s concurrent-batch guard and the worker only sees an opaque
+        # "timed out after 420.0s"; with it the call ends on its own budget with a typed error.
+        from agent.deadline import run_bounded_async
+        bounded = await run_bounded_async(
+            stage(user_prompt, debug_call_data, temp_paths),
+            _resolve_analysis_deadline(kind),
+            label=f"vision_{kind}_analysis")
+        if bounded.timed_out:
+            debug_call_data["error"] = f"{kind} analysis exceeded its {bounded.timeout_s:.0f}s deadline"
+            logger.warning("%s analysis abandoned at its %.0fs deadline", kind, bounded.timeout_s)
+            return finish(_deadline_result(kind, bounded.timeout_s))
+        reply, scale_note = bounded.value
+        analysis, analysis_length, truncated = _cap_analysis(kind, reply.text)
         logger.info("%s analysis completed (%s characters)", kind.capitalize(), analysis_length)
         analysis = analysis or f"There was a problem with the request and the {kind} could not be analyzed."
         result = {"success": True, "analysis": f"[{scale_note}] {analysis}" if scale_note else analysis}
+        if reply.reasoning_only:
+            # The model never emitted an answer, so say so inline: a worker must not read the
+            # deliberation as a description of the image.
+            result["analysis"] = f"{_REASONING_ONLY_MARKER} {result['analysis']}"
+            result["reasoning_only"] = True
         if scale_note:
             result["scale_note"] = scale_note
+        if truncated:
+            result["truncated"] = True
+            result["analysis_chars"] = analysis_length
         debug_call_data.update(success=True, analysis_length=analysis_length)
         return finish(result)
     except Exception as e:
         error_msg = f"Error analyzing {kind}: {e!s}"
         logger.error("%s", error_msg, exc_info=True)
         err_str = str(e).lower()
-        template = next(
-            (tpl for hints, tpl in rules if any(hint in err_str for hint in hints)),
-            f"There was a problem with the request and the {kind} could not be analyzed. Error: {{e}}")
-        analysis = template.format(e=e, model=model)
+        result: dict = {"success": False, "error": error_msg}
+        if _is_timeout_error(e):
+            result["error_type"] = "vision_timeout"
+            result["retryable"] = True
+            analysis = (
+                f"The vision model timed out during {kind} analysis ({e}). Retry once with a "
+                f"narrower question or a `region` crop; if it times out again, stop calling vision "
+                f"and report the blocker.")
+        else:
+            template = next(
+                (tpl for hints, tpl in rules if any(hint in err_str for hint in hints)),
+                f"There was a problem with the request and the {kind} could not be analyzed. Error: {{e}}")
+            analysis = template.format(e=e, model=model)
+        result["analysis"] = analysis
         debug_call_data["error"] = error_msg
-        return finish({"success": False, "error": error_msg, "analysis": analysis})
+        return finish(result)
     finally:
         for path in temp_paths:
             if path and path.exists():
@@ -920,9 +991,9 @@ async def vision_analyze_tool(
             image_data_url = await _resize_prepared(prepared, _scale_info)
             messages[0]["content"][1]["image_url"]["url"] = image_data_url
             response = await async_call_llm(**call_kwargs)
-        analysis = await _call_vision_llm(
+        reply = await _call_vision_llm(
             call_kwargs, "Vision LLM returned empty content, retrying once", response)
-        return analysis, _build_scale_note(_scale_info or None, prepared.crop_offset or None)
+        return reply, _build_scale_note(_scale_info or None, prepared.crop_offset or None)
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 
 
@@ -1141,8 +1212,8 @@ async def video_analyze_tool(
         debug_call_data["video_size_bytes"] = video_size_bytes
         messages = _media_messages(prompt, "video_url", video_data_url)
         call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0)
-        analysis = await _call_vision_llm(call_kwargs, "Empty video response, retrying once")
-        return analysis, None
+        reply = await _call_vision_llm(call_kwargs, "Empty video response, retrying once")
+        return reply, None
     return await _run_analysis("video", video_url, user_prompt, model, stage)
 
 

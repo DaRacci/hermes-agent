@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 CORE_RUNTIME_KEYS: dict[str, str] = {
     "computer_use.backend": "plugins/computer_use/__init__.py configured_backend_name() (unset = cua)",
     "dashboard.kanban": "plugins/kanban/dashboard/plugin_api.py (bundled dashboard tab preferences)",
+    # Vision budgets: read per call by tools/vision_tools_output_budget.py (defaults live there, so
+    # the aux vision block's shape stays a plain _aux() entry).
+    "auxiliary.vision.deadline": "tools/vision_tools_output_budget.py resolve_deadline() (whole-call wall clock)",
+    "auxiliary.vision.video_deadline": "tools/vision_tools_output_budget.py resolve_deadline('video')",
+    "auxiliary.vision.max_analysis_chars": "tools/vision_tools_output_budget.py cap_analysis()",
+    "auxiliary.vision.max_reasoning_chars": "tools/vision_tools_output_budget.py resolve_max_reasoning_chars()",
 }
 
 
