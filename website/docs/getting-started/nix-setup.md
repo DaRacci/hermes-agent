@@ -793,6 +793,75 @@ The `preStart` script creates a GC root at `${stateDir}/.gc-root` pointing to th
 
 ---
 
+## Consuming the Flake (Overlay and lib)
+
+The NixOS and Home Manager modules above consume this flake for you. If you wire `hermes-agent` into your own flake instead, these are the entry points: the `packages.<system>.{default,minimal,messaging}` outputs, the `overlays.default` and `overlays.locked` overlays, and the `lib.mkHermesAgent` builder that the packages are built with.
+
+### Using the Overlay
+
+External flakes can take the package through one of two overlays:
+
+- `hermes-agent.overlays.default` rebuilds the package against your own `pkgs`,
+  shipping the same optional groups as `packages.<system>.default` — every
+  platform-portable group, plus `matrix` on Linux.
+- `hermes-agent.overlays.locked` exposes the exact derivation this flake ships
+  and tests: the same output path as `packages.<system>.default`.
+
+```nix
+{
+  inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
+  outputs = { hermes-agent, nixpkgs, ... }: {
+    nixpkgs.overlays = [ hermes-agent.overlays.default ];
+    # Or pin to the tested derivation:
+    #   nixpkgs.overlays = [ hermes-agent.overlays.locked ];
+    # Either overlay returns the full variant. The `extra*` options add to the
+    # groups it already ships:
+    #   pkgs.hermes-agent.override { extraPythonPackages = [ pkgs.python3Packages.requests ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
+    # `defaultDependencyGroups` replaces that list instead of adding to it, so
+    # `[ ]` drops every optional group:
+    #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
+  };
+}
+```
+
+The difference is what each overlay follows. `default` re-instantiates the package against your `pkgs`, so an override of a shared dependency — `git.overrideAttrs`, a different `openssl`, a whole patched package set — changes `pkgs.hermes-agent`. `locked` is the flake's own instantiation and ignores those overrides, which is why it is the right choice when you want exactly what this flake's CI built. When your `nixpkgs` *is* the flake's `nixpkgs`, the two resolve to the same derivation.
+
+`defaultDependencyGroups` *replaces* the shipped list rather than adding to it, so `pkgs.hermes-agent.override { defaultDependencyGroups = [ "messaging" "voice" ]; }` builds with exactly those two groups, and `[ ]` produces the bare build — the same derivation as `packages.<system>.minimal`.
+
+### Consuming the Flake as a Library (`mkHermesAgent`)
+
+`flake.lib.mkHermesAgent` is the builder this flake uses for its own packages — `packages.<system>.minimal` and everything derived from it — and the supported entry point for a consumer that has to build the package itself, for example an overlay that patches the source first. Everything that makes a build reproducible (flake inputs, the `pm/lock.json` pins, the provenance embedded in `install-stamp.json`) lives in one place, so a consumer cannot drift into a second wiring set.
+
+```nix
+inputs.hermes-agent.lib.mkHermesAgent {
+  pkgs = pkgs;                    # required — the package set to build against
+  src = inputs.hermes-agent;      # source tree; defaults to the flake's own source
+  defaultDependencyGroups = [ ];  # groups this variant ships (default: none)
+  extraDependencyGroups = [ ];    # groups added on top of the variant's own
+  extraPythonPackages = [ ];      # extra Python packages for the sealed venv
+  distance = 0;                   # commits since the tagged release, for "+N.g<sha>"
+}
+```
+
+`src` is a source **tree**: either the flake set itself, which carries `rev`/`dirtyRev`/`lastModified` into the install stamp, or a plain path, which carries no provenance and gets the neutral values. The result is `callPackage`'d, so `makeOverridable` travels with it — `.override { ... }` and `.override (prev: ...)` both work, including appending to `prev.extraDependencyGroups`.
+
+Patching is the caller's job: point `src` at the patched tree, not at a patch series.
+
+```nix
+inputs.hermes-agent.lib.mkHermesAgent {
+  inherit pkgs;
+  src = builtins.path {
+    path = /path/to/already-patched/hermes-agent;
+    name = "hermes-agent-src";
+  };
+}
+```
+
+There is deliberately no `patches` argument. Applying patches inside the builder would mean reading `nix/hermes-agent.nix` and `hermes_cli/__init__.py` out of a derivation, i.e. import-from-derivation, and the same constraint rules out a store derivation as `src` — `src = pkgs.applyPatches { ... }` evaluates only with import-from-derivation enabled. If you patch at eval time, keep the wiring that patch step already requires, or materialise the patched tree once and hand `builtins.path` the result.
+
+---
+
 ## Plugins
 
 The NixOS module supports declarative plugin installation — no imperative `hermes plugins install` needed.
@@ -872,7 +941,7 @@ requirements can still fail that resolution. The table lists common groups;
 
 Memory providers that live in the [plugin catalog](../user-guide/features/plugins.md) rather than in the Hermes tree (e.g. Hindsight) are not extras. Install them like any catalog plugin with `hermes plugins install hindsight`, or declaratively via [`extraPlugins`](#directory-plugins-extraplugins) pointing at the plugin's source tree.
 
-Or use the pre-built `#messaging` or `#full` flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
+Or use the pre-built `#messaging` or default flake packages instead of per-extra configuration (see [Quick Start](#quick-start-any-nix-user)).
 
 **When to use which:**
 
@@ -893,24 +962,6 @@ services.hermes-agent = {
   extraPythonPackages = [ config.services.hermes-agent.package.python.pkgs.redis ];  # its Python dep
   extraPackages = [ pkgs.redis ];            # system binary it needs
 };
-```
-
-### Using the Overlay
-
-External flakes can override the package directly:
-
-```nix
-{
-  inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
-  outputs = { hermes-agent, nixpkgs, ... }: {
-    nixpkgs.overlays = [ hermes-agent.overlays.default ];
-    # Then:
-    #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
-    # Both add to the groups the default package ships. To drop those:
-    #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
-  };
-}
 ```
 
 ### Plugin Configuration
