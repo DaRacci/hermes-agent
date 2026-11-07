@@ -75,8 +75,14 @@ def test_a_served_profiles_tick_authors_board_records_as_that_profile(board_env,
             out = json.loads(kt._handle_comment({"task_id": tid, "body": f"from {name}"}))
             assert out["ok"], out
             assert _last_comment_author(tid) == name
-            child = json.loads(kt._handle_create(
-                {"title": f"{name} child", "assignee": "peer", "parents": [tid]}))
+            # `kanban_create` is orchestrator-only: drop the dispatcher task env for the
+            # create, then restore it so the next iteration's comment stays worker-scoped.
+            monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+            try:
+                child = json.loads(kt._handle_create(
+                    {"title": f"{name} child", "assignee": "peer", "parents": [tid]}))
+            finally:
+                monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
             assert child["ok"], child
             assert _created_by(child["task_id"]) == name
         finally:
