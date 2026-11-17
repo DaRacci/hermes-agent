@@ -76,7 +76,8 @@ conflict_body() {
 
 \`\`\`bash
 cd /data/workspace/maintainer/hermes-agent
-git fetch origin upstream --filter=blob:none
+git fetch origin --filter=blob:none
+git fetch upstream --filter=blob:none
 git checkout -B "patch/$slug" "origin/patch/$slug"
 git rebase --onto origin/main "\$(git merge-base origin/main "patch/$slug")"
 \`\`\`
