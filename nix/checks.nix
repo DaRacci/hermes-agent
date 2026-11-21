@@ -1461,6 +1461,54 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # `pkgs.hermes-agent` is only worth offering if it is the package this
+        # flake ships: `overlays.default` must resolve the full group list
+        # against the consumer's `final` and land on `packages.default`, not on
+        # the builder's bare variant. The cases above all go through
+        # `.override` on `packages.default`, so without this one nothing
+        # evaluates the overlay itself.
+        overlay-default-matches-packages-default = let
+          system = pkgs.stdenv.hostPlatform.system;
+          consumerPkgs = import inputs.nixpkgs {
+            inherit system;
+            overlays = [ inputs.self.overlays.default ];
+          };
+          lockedPkgs = import inputs.nixpkgs {
+            inherit system;
+            overlays = [ inputs.self.overlays.locked ];
+          };
+          path = drv: builtins.unsafeDiscardStringContext drv.drvPath;
+          cases = [
+            {
+              what = "overlays.default builds packages.default (full variant)";
+              ok = path consumerPkgs.hermes-agent == path self'.packages.default;
+            }
+            {
+              what = "overlays.default is not the bare variant (packages.minimal)";
+              ok = path consumerPkgs.hermes-agent != path self'.packages.minimal;
+            }
+            {
+              what = "overlays.locked is packages.default's exact derivation";
+              ok = path lockedPkgs.hermes-agent == path self'.packages.default;
+            }
+            {
+              what = "dropping every group through the overlay yields packages.minimal";
+              ok =
+                path (consumerPkgs.hermes-agent.override { defaultDependencyGroups = [ ]; })
+                == path self'.packages.minimal;
+            }
+          ];
+          report = lib.concatMapStrings (c: "${if c.ok then "PASS" else "FAIL"}: ${c.what}\n") cases;
+        in
+        if lib.any (c: !c.ok) cases then
+          throw "overlays.default drifted from the flake's packages.default:\n${report}"
+        else
+          pkgs.runCommand "hermes-overlay-default-matches-packages-default" { inherit report; } ''
+            printf '%s' "$report"
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
+
         # Exercise the actual uv2nix environment, not only the selector.
         python-lock-derived = pkgs.runCommand "hermes-python-lock-derived" { } ''
           set -e
